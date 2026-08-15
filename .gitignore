@@ -1,0 +1,28 @@
+gitignore
+# Conda
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+.env
+# Large data files - never commit these
+data/raw_audio/
+data/processed_audio/
+data/output/aligned/
+# Only verified, final production JSON is tracked
+# data/output/verified/ is intentionally NOT ignored
+# OS
+.DS_Store
+Thumbs.db
+# IDE
+.vscode/
+.idea/
+.metals/
+.bsp/
+.bloop/
+*.log
+target/
+static/js/
+output.log
+project/project/
+project/target/

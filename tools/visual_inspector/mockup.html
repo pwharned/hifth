@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hifth — Mock</title>
+  <style>
+/* ── Reset ────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Design Tokens ────────────────────────────────────────────────────── */
+:root {
+  --bg:           #0f1117;
+  --bg-card:      #16181f;
+  --bg-raised:    #1e2029;
+  --border:       #272a35;
+  --border-light: #2e3140;
+  --text-primary:   #e8eaf0;
+  --text-secondary: #8b90a0;
+  --text-muted:     #555a6b;
+  --accent:  #4f8ef7;
+  --green:   #3ecf8e;
+  --amber:   #f5a623;
+  --red:     #f26d6d;
+  --purple:  #9d7cdb;
+  --arabic-font: 'Traditional Arabic', 'Scheherazade New', 'Amiri', serif;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+/* ── Base ─────────────────────────────────────────────────────────────── */
+html { scroll-behavior: smooth; }
+body {
+  background:  var(--bg);
+  color:       var(--text-primary);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size:   15px;
+  line-height: 1.5;
+  min-height:  100vh;
+}
+/* ── App Shell ────────────────────────────────────────────────────────── */
+.app {
+  max-width:      480px;
+  margin:         0 auto;
+  min-height:     100vh;
+  display:        flex;
+  flex-direction: column;
+}
+/* ── Top Bar ──────────────────────────────────────────────────────────── */
+.top-bar {
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  padding:         14px 20px;
+  direction:       ltr;
+  flex-shrink:     0;
+}
+.wordmark {
+  font-size:      17px;
+  font-weight:    700;
+  letter-spacing: 0.05em;
+  color:          var(--text-primary);
+}
+.wordmark span { color: var(--accent); }
+.connection-dot {
+  width:         8px;
+  height:        8px;
+  border-radius: 50%;
+  background:    var(--green);
+  box-shadow:    0 0 6px var(--green);
+}
+/* ── Scrollable Content ───────────────────────────────────────────────── */
+.scroll-body {
+  flex:       1;
+  overflow-y: auto;
+  padding:    0 20px 40px;
+}
+/* ── Section Label ────────────────────────────────────────────────────── */
+.section-label {
+  font-size:      11px;
+  font-weight:    600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color:          var(--text-muted);
+  margin:         28px 0 12px;
+  direction:      ltr;
+}
+/* ── Date + Greeting ──────────────────────────────────────────────────── */
+.greeting-block {
+  padding-top: 8px;
+  direction:   ltr;
+}
+.hijri-date {
+  font-size:     13px;
+  color:         var(--text-muted);
+  margin-bottom: 4px;
+}
+.greeting {
+  font-size:   22px;
+  font-weight: 600;
+  color:       var(--text-primary);
+}
+/* ── Streak Card ──────────────────────────────────────────────────────── */
+.streak-card {
+  background:      var(--bg-card);
+  border:          1px solid var(--border);
+  border-radius:   var(--radius-md);
+  padding:         14px 16px;
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  direction:       ltr;
+  margin-top:      16px;
+}
+.streak-left {
+  display:     flex;
+  align-items: center;
+  gap:         10px;
+}
+.streak-flame { font-size: 22px; line-height: 1; }
+.streak-count {
+  font-size:            20px;
+  font-weight:          700;
+  color:                var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+.streak-label {
+  font-size:  12px;
+  color:      var(--text-secondary);
+  margin-top: 1px;
+}
+.streak-shield {
+  display:       flex;
+  align-items:   center;
+  gap:           6px;
+  background:    var(--bg-raised);
+  border:        1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding:       5px 10px;
+  font-size:     12px;
+  color:         var(--text-secondary);
+}
+.shield-icon { font-size: 14px; color: var(--accent); }
+/* ── Summary Stats ────────────────────────────────────────────────────── */
+.summary-stat {
+  display:    flex;
+  align-items: center;
+  gap:         8px;
+  direction:   ltr;
+  margin-top:  12px;
+  flex-wrap:   wrap;
+}
+.stat-pill {
+  background:    var(--bg-raised);
+  border:        1px solid var(--border);
+  border-radius: 20px;
+  padding:       5px 12px;
+  font-size:     12px;
+  color:         var(--text-secondary);
+}
+.stat-pill strong {
+  color:       var(--text-primary);
+  font-weight: 600;
+}
+/* ── Queue Card ───────────────────────────────────────────────────────── */
+.queue-card {
+  background:    var(--bg-card);
+  border:        1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow:      hidden;
+  margin-top:    16px;
+}
+.queue-header {
+  padding:         14px 16px 12px;
+  border-bottom:   1px solid var(--border);
+  direction:       ltr;
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+}
+.queue-title {
+  font-size:   13px;
+  font-weight: 600;
+  color:       var(--text-primary);
+}
+.est-time {
+  font-size: 12px;
+  color:     var(--text-muted);
+}
+.queue-items { padding: 4px 0; }
+.queue-item {
+  display:         flex;
+  align-items:     center;
+  justify-content: space-between;
+  padding:         11px 16px;
+  border-bottom:   1px solid var(--border);
+  direction:       ltr;
+}
+.queue-item:last-child { border-bottom: none; }
+.queue-item-left {
+  display:     flex;
+  align-items: center;
+  gap:         10px;
+}
+.queue-type-dot {
+  width:         8px;
+  height:        8px;
+  border-radius: 50%;
+  flex-shrink:   0;
+}
+.dot-review { background: var(--green);  }
+.dot-study  { background: var(--accent); }
+.dot-new    { background: var(--purple); }
+.queue-item-name {
+  font-size:   14px;
+  color:       var(--text-primary);
+  font-family: var(--arabic-font);
+  direction:   rtl;
+}
+.queue-item-sub {
+  font-size:  11px;
+  color:      var(--text-muted);
+  direction:  ltr;
+  margin-top: 1px;
+}
+.queue-item-tag {
+  font-size:     11px;
+  padding:       3px 8px;
+  border-radius: 20px;
+  font-weight:   500;
+  flex-shrink:   0;
+}
+.tag-review { background: #3ecf8e18; color: var(--green);  }
+.tag-study  { background: #4f8ef718; color: var(--accent); }
+.tag-new    { background: #9d7cdb18; color: var(--purple); }
+/* ── Begin Button ─────────────────────────────────────────────────────── */
+.begin-btn {
+  width:          100%;
+  padding:        16px;
+  background:     var(--accent);
+  border:         none;
+  border-radius:  var(--radius-md);
+  color:          white;
+  font-size:      16px;
+  font-weight:    600;
+  cursor:         pointer;
+  margin-top:     20px;
+  letter-spacing: 0.02em;
+  transition:     opacity 0.15s, transform 0.1s;
+  direction:      ltr;
+}
+.begin-btn:hover  { opacity: 0.9; }
+.begin-btn:active { transform: scale(0.98); }
+/* ── River ────────────────────────────────────────────────────────────── */
+.river-container {
+  padding:       12px 16px;
+  background:    var(--bg-card);
+  border:        1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow:      hidden;
+}
+.river-row {
+  display:       flex;
+  align-items:   center;
+  gap:           8px;
+  direction:     ltr;
+  margin-bottom: 5px;
+  width:         100%;
+}
+.river-row:last-child { margin-bottom: 0; }
+.river-name {
+  font-family:   var(--arabic-font);
+  font-size:     15px;
+  color:         var(--text-secondary);
+  text-align:    right;
+  direction:     rtl;
+  flex-shrink:   0;
+  white-space:   nowrap;
+  overflow:      hidden;
+  text-overflow: ellipsis;
+}
+.river-bar-wrap {
+  height:        14px;
+  background:    var(--bg-raised);
+  border-radius: 4px;
+  overflow:      hidden;
+  display:       flex;
+  cursor:        pointer;
+  transition:    opacity 0.15s;
+  min-width:     24px;
+}
+.river-bar-wrap:hover { opacity: 0.75; }
+.seg { height: 100%; }
+.seg-reviewed { background: var(--green);  }
+.seg-due      { background: var(--amber);  }
+.seg-studying { background: var(--accent); }
+/* ── Modal ────────────────────────────────────────────────────────────── */
+.modal-overlay {
+  position:        fixed;
+  inset:           0;
+  background:      rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(3px);
+  display:         flex;
+  align-items:     flex-end;
+  justify-content: center;
+  z-index:         100;
+  opacity:         0;
+  pointer-events:  none;
+  transition:      opacity 0.2s;
+}
+.modal-overlay.open {
+  opacity:        1;
+  pointer-events: all;
+}
+.modal-sheet {
+  background:    var(--bg-card);
+  border:        1px solid var(--border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding:       24px 20px 36px;
+  width:         100%;
+  max-width:     780px;
+  transform:     translateY(20px);
+  transition:    transform 0.2s;
+  direction:     ltr;
+}
+.modal-overlay.open .modal-sheet { transform: translateY(0); }
+.modal-title {
+  font-size:     16px;
+  font-weight:   600;
+  margin-bottom: 6px;
+}
+.modal-subtitle {
+  font-size:     13px;
+  color:         var(--text-secondary);
+  margin-bottom: 20px;
+}
+.modal-actions { display: flex; gap: 10px; }
+.modal-btn {
+  flex:          1;
+  padding:       12px;
+  border-radius: var(--radius-md);
+  border:        none;
+  font-size:     14px;
+  font-weight:   600;
+  cursor:        pointer;
+  transition:    opacity 0.15s;
+}
+.modal-btn:hover { opacity: 0.85; }
+.modal-btn-cancel {
+  background: var(--bg-raised);
+  border:     1px solid var(--border);
+  color:      var(--text-secondary);
+}
+.modal-btn-confirm {
+  background: var(--accent);
+  color:      white;
+}
+/* ── Screen switching ─────────────────────────────────────────────────── */
+.screen         { display: none; }
+.screen.active  { display: flex; flex-direction: column; min-height: 100vh; }
+/* ── Session Complete ─────────────────────────────────────────────────── */
+.complete-body {
+  flex:            1;
+  display:         flex;
+  flex-direction:  column;
+  align-items:     center;
+  justify-content: center;
+  padding:         32px 24px;
+  text-align:      center;
+  direction:       ltr;
+}
+.complete-icon    { font-size: 48px; margin-bottom: 16px; }
+.complete-title {
+  font-size:     24px;
+  font-weight:   700;
+  margin-bottom: 6px;
+}
+.complete-subtitle {
+  font-size:     14px;
+  color:         var(--text-secondary);
+  margin-bottom: 32px;
+}
+.complete-stats {
+  display:       flex;
+  gap:           12px;
+  margin-bottom: 24px;
+  width:         100%;
+}
+.complete-stat {
+  flex:          1;
+  background:    var(--bg-card);
+  border:        1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding:       14px 12px;
+  text-align:    center;
+}
+.complete-stat-value {
+  font-size:            20px;
+  font-weight:          700;
+  color:                var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.complete-stat-label {
+  font-size:  11px;
+  color:      var(--text-muted);
+  margin-top: 3px;
+}
+.complete-river {
+  width:         100%;
+  background:    var(--bg-card);
+  border:        1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding:       16px;
+  margin-bottom: 24px;
+  text-align:    left;
+}
+.complete-river-label {
+  font-size:     12px;
+  color:         var(--text-secondary);
+  margin-bottom: 8px;
+  font-family:   var(--arabic-font);
+  direction:     rtl;
+  text-align:    right;
+}
+.complete-river-bar {
+  height:        12px;
+  background:    var(--bg-raised);
+  border-radius: 4px;
+  overflow:      hidden;
+  display:       flex;
+}
+.complete-next-review {
+  font-size:  12px;
+  color:      var(--text-muted);
+  margin-top: 8px;
+}
+.cloze-prompt {
+  width:         100%;
+  background:    #4f8ef710;
+  border:        1px solid #4f8ef730;
+  border-radius: var(--radius-md);
+  padding:       14px 16px;
+  margin-bottom: 24px;
+  text-align:    left;
+}
+.cloze-prompt-title {
+  font-size:     13px;
+  font-weight:   600;
+  color:         var(--accent);
+  margin-bottom: 4px;
+}
+.cloze-prompt-body {
+  font-size: 13px;
+  color:     var(--text-secondary);
+}
+.streak-update {
+  display:       flex;
+  align-items:   center;
+  gap:           8px;
+  font-size:     14px;
+  color:         var(--amber);
+  font-weight:   600;
+  margin-bottom: 28px;
+}
+.complete-actions { display: flex; gap: 10px; width: 100%; }
+/* ── Desktop ──────────────────────────────────────────────────────────── */
+@media (min-width: 1024px) {
+  .app {
+    max-width: 780px;
+  }
+  .top-bar {
+    padding: 16px 32px;
+  }
+  .scroll-body {
+    padding: 0 32px 60px;
+  }
+  .begin-btn {
+    font-size: 17px;
+    padding:   18px;
+  }
+  .river-bar-wrap {
+    height: 16px;
+  }
+  .river-name {
+    font-size: 16px;
+    width:     120px;
+  }
+  .queue-card {
+    margin-top: 20px;
+  }
+  .complete-stats {
+    gap: 16px;
+  }
+  .complete-stat {
+    padding: 18px 16px;
+  }
+  .complete-stat-value {
+    font-size: 24px;
+  }
+  .modal-sheet {
+    padding: 28px 32px 40px;
+  }
+}
+
+
+  </style>
+</head>
+<body>
+<!-- ═══════════════════════════════════════════════════════════════
+     SCREEN 1: HOME
+═══════════════════════════════════════════════════════════════ -->
+<div class="app screen active" id="screen-home">
+  <div class="top-bar">
+    <div class="wordmark">h<span>i</span>fth</div>
+    <div class="connection-dot"></div>
+  </div>
+  <div class="scroll-body">
+    <!-- Date + Greeting -->
+    <div class="greeting-block">
+      <div class="hijri-date" id="hijri-date">Loading...</div>
+      <div class="greeting">Good evening</div>
+    </div>
+    <!-- Streak -->
+    <div class="streak-card">
+      <div class="streak-left">
+        <div class="streak-flame">🔥</div>
+        <div>
+          <div class="streak-count">12</div>
+          <div class="streak-label">day streak</div>
+        </div>
+      </div>
+      <div class="streak-shield">
+        <span class="shield-icon">🛡</span>
+        Shield active
+      </div>
+    </div>
+    <!-- Summary stats -->
+    <div class="summary-stat">
+      <div class="stat-pill"><strong>47</strong> of 240 sections solid</div>
+      <div class="stat-pill"><strong>3</strong> in progress</div>
+    </div>
+    <!-- Today's Queue -->
+    <div class="section-label">Today's Session</div>
+    <div class="queue-card">
+      <div class="queue-header">
+        <div class="queue-title">3 sections queued</div>
+        <div class="est-time">~22 min</div>
+      </div>
+      <div class="queue-items">
+        <div class="queue-item">
+          <div class="queue-item-left">
+            <div class="queue-type-dot dot-review"></div>
+            <div>
+              <div class="queue-item-name">البقرة ١-٢٥</div>
+              <div class="queue-item-sub">Review · interval 8 days</div>
+            </div>
+          </div>
+          <div class="queue-item-tag tag-review">Review</div>
+        </div>
+        <div class="queue-item">
+          <div class="queue-item-left">
+            <div class="queue-type-dot dot-review"></div>
+            <div>
+              <div class="queue-item-name">آل عمران ٩٣-١١٢</div>
+              <div class="queue-item-sub">Review · interval 4 days</div>
+            </div>
+          </div>
+          <div class="queue-item-tag tag-review">Review</div>
+        </div>
+        <div class="queue-item">
+          <div class="queue-item-left">
+            <div class="queue-type-dot dot-study"></div>
+            <div>
+              <div class="queue-item-name">البقرة ٢٦-٤٣</div>
+              <div class="queue-item-sub">Studying · 50% cloze</div>
+            </div>
+          </div>
+          <div class="queue-item-tag tag-study">Study</div>
+        </div>
+      </div>
+    </div>
+    <!-- Begin Button -->
+    <button class="begin-btn" onclick="showScreen('screen-complete')">
+      Begin Today's Session →
+    </button>
+    <!-- River -->
+    <div class="section-label">Your Quran</div>
+    <div class="river-container" id="river">
+      <!-- Populated by JS -->
+    </div>
+  </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════
+     SCREEN 2: SESSION COMPLETE
+═══════════════════════════════════════════════════════════════ -->
+<div class="app screen" id="screen-complete">
+  <div class="top-bar">
+    <div class="wordmark">h<span>i</span>fth</div>
+    <div></div>
+  </div>
+  <div class="complete-body">
+    <div class="complete-icon">✦</div>
+    <div class="complete-title">Session Complete</div>
+    <div class="complete-subtitle">
+      البقرة ٢٦-٤٣ &nbsp;·&nbsp; 18 Ayahs &nbsp;·&nbsp; 14 min
+    </div>
+    <!-- Stats -->
+    <div class="complete-stats">
+      <div class="complete-stat">
+        <div class="complete-stat-value">50%</div>
+        <div class="complete-stat-label">Cloze level</div>
+      </div>
+      <div class="complete-stat">
+        <div class="complete-stat-value">8</div>
+        <div class="complete-stat-label">Taps perfect</div>
+      </div>
+      <div class="complete-stat">
+        <div class="complete-stat-value">14</div>
+        <div class="complete-stat-label">Minutes</div>
+      </div>
+    </div>
+    <!-- Cloze prompt -->
+    <div class="cloze-prompt">
+      <div class="cloze-prompt-title">Ready to push further?</div>
+      <div class="cloze-prompt-body">
+        You reached 50% cloze. Next session try 75% — the next step toward full recall.
+      </div>
+    </div>
+    <!-- Mini river bar -->
+    <div class="complete-river">
+      <div class="complete-river-label">البقرة</div>
+      <div class="complete-river-bar">
+        <div class="seg seg-reviewed"  style="width: 20%"></div>
+        <div class="seg seg-studying"  style="width: 8%"></div>
+        <div class="seg seg-new"       style="flex: 1"></div>
+      </div>
+      <div class="complete-next-review">
+        This section next due: continuing study phase
+      </div>
+    </div>
+    <!-- Streak update -->
+    <div class="streak-update">
+      🔥 Streak: 13 days
+    </div>
+    <!-- Actions -->
+    <div class="complete-actions">
+      <button
+        class="modal-btn modal-btn-cancel"
+        onclick="showScreen('screen-home')"
+      >
+        Home
+      </button>
+      <button
+        class="modal-btn modal-btn-confirm"
+        onclick="showScreen('screen-home')"
+      >
+        Next Section →
+      </button>
+    </div>
+  </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════
+     CONFIRMATION MODAL
+═══════════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="modal" onclick="closeModal(event)">
+  <div class="modal-sheet">
+    <div class="modal-title" id="modal-title">Start this section?</div>
+    <div class="modal-subtitle" id="modal-subtitle">
+      This section is not in your queue today.
+      Starting it now will add it to your active study list.
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel"  onclick="closeModal()">Cancel</button>
+      <button class="modal-btn modal-btn-confirm" onclick="closeModal()">Start →</button>
+    </div>
+  </div>
+</div>
+<script>
+  // ── Islamic Date ───────────────────────────────────────────────────────────
+  function renderHijriDate() {
+    const now = new Date();
+    const hijri = new Intl.DateTimeFormat('en-u-ca-islamic-umalqura', {
+      day:   'numeric',
+      month: 'long',
+      year:  'numeric'
+    }).format(now);
+    // Also format day of week in English
+    const weekday = new Intl.DateTimeFormat('en', {
+      weekday: 'long'
+    }).format(now);
+    document.getElementById('hijri-date').textContent =
+      `${weekday}, ${hijri}`;
+  }
+  // ── Greeting by time of day ────────────────────────────────────────────────
+  function renderGreeting() {
+    const h = new Date().getHours();
+    let g;
+    if      (h < 5)  g = 'Good night';
+    else if (h < 12) g = 'Good morning';
+    else if (h < 17) g = 'Good afternoon';
+    else             g = 'Good evening';
+    document.querySelector('.greeting').textContent = g;
+  }
+  // ── River Data ─────────────────────────────────────────────────────────────
+  // Mock data: [surahName, ayahCount, reviewedPct, studyingPct, duePct]
+  // reviewedPct + studyingPct + duePct <= 100
+  // remainder is "not started"
+  const SURAHS = [
+    ['الفاتحة',    7,   100, 0,  0 ],
+    ['البقرة',     286, 20,  8,  5 ],
+    ['آل عمران',  200, 40,  4,  8 ],
+    ['النساء',     176, 10,  5,  0 ],
+    ['المائدة',   120, 0,   0,  0 ],
+    ['الأنعام',   165, 0,   0,  0 ],
+    ['الأعراف',   206, 0,   0,  0 ],
+    ['الأنفال',    75, 0,   0,  0 ],
+    ['التوبة',    129, 0,   0,  0 ],
+    ['يونس',      109, 0,   0,  0 ],
+    ['هود',       123, 0,   0,  0 ],
+    ['يوسف',      111, 0,   0,  0 ],
+    ['الرعد',      43, 0,   0,  0 ],
+    ['إبراهيم',    52, 0,   0,  0 ],
+    ['الحجر',      99, 0,   0,  0 ],
+    ['النحل',     128, 0,   0,  0 ],
+    ['الإسراء',   111, 0,   0,  0 ],
+    ['الكهف',     110, 0,   0,  0 ],
+    ['مريم',       98, 0,   0,  0 ],
+    ['طه',        135, 0,   0,  0 ],
+    ['الأنبياء',  112, 0,   0,  0 ],
+    ['الحج',       78, 0,   0,  0 ],
+    ['المؤمنون',  118, 0,   0,  0 ],
+    ['النور',      64, 0,   0,  0 ],
+    ['الفرقان',    77, 0,   0,  0 ],
+    ['الشعراء',   227, 0,   0,  0 ],
+    ['النمل',      93, 0,   0,  0 ],
+    ['القصص',      88, 0,   0,  0 ],
+    ['العنكبوت',   69, 0,   0,  0 ],
+    ['الروم',      60, 0,   0,  0 ],
+    ['لقمان',      34, 0,   0,  0 ],
+    ['السجدة',     30, 0,   0,  0 ],
+    ['الأحزاب',   73, 0,   0,  0 ],
+    ['سبأ',        54, 0,   0,  0 ],
+    ['فاطر',       45, 0,   0,  0 ],
+    ['يس',         83, 0,   0,  0 ],
+    ['الصافات',   182, 0,   0,  0 ],
+    ['ص',          88, 0,   0,  0 ],
+    ['الزمر',      75, 0,   0,  0 ],
+    ['غافر',       85, 0,   0,  0 ],
+    ['فصلت',       54, 0,   0,  0 ],
+    ['الشورى',     53, 0,   0,  0 ],
+    ['الزخرف',     89, 0,   0,  0 ],
+    ['الدخان',     59, 0,   0,  0 ],
+    ['الجاثية',    37, 0,   0,  0 ],
+    ['الأحقاف',    35, 0,   0,  0 ],
+    ['محمد',       38, 0,   0,  0 ],
+    ['الفتح',      29, 0,   0,  0 ],
+    ['الحجرات',    18, 0,   0,  0 ],
+    ['ق',          45, 0,   0,  0 ],
+    ['الذاريات',   60, 0,   0,  0 ],
+    ['الطور',      49, 0,   0,  0 ],
+    ['النجم',      62, 0,   0,  0 ],
+    ['القمر',      55, 0,   0,  0 ],
+    ['الرحمن',     78, 0,   0,  0 ],
+    ['الواقعة',    96, 0,   0,  0 ],
+    ['الحديد',     29, 0,   0,  0 ],
+    ['المجادلة',   22, 0,   0,  0 ],
+    ['الحشر',      24, 0,   0,  0 ],
+    ['الممتحنة',   13, 0,   0,  0 ],
+    ['الصف',       14, 0,   0,  0 ],
+    ['الجمعة',     11, 0,   0,  0 ],
+    ['المنافقون',  11, 0,   0,  0 ],
+    ['التغابن',    18, 0,   0,  0 ],
+    ['الطلاق',     12, 0,   0,  0 ],
+    ['التحريم',    12, 0,   0,  0 ],
+    ['الملك',      30, 0,   0,  0 ],
+    ['القلم',      52, 0,   0,  0 ],
+    ['الحاقة',     52, 0,   0,  0 ],
+    ['المعارج',    44, 0,   0,  0 ],
+    ['نوح',        28, 0,   0,  0 ],
+    ['الجن',       28, 0,   0,  0 ],
+    ['المزمل',     20, 0,   0,  0 ],
+    ['المدثر',     56, 0,   0,  0 ],
+    ['القيامة',    40, 0,   0,  0 ],
+    ['الإنسان',    31, 0,   0,  0 ],
+    ['المرسلات',   50, 0,   0,  0 ],
+    ['النبأ',      40, 0,   0,  0 ],
+    ['النازعات',   46, 0,   0,  0 ],
+    ['عبس',        42, 0,   0,  0 ],
+    ['التكوير',    29, 0,   0,  0 ],
+    ['الانفطار',   19, 0,   0,  0 ],
+    ['المطففين',   36, 0,   0,  0 ],
+    ['الانشقاق',   25, 0,   0,  0 ],
+    ['البروج',     22, 0,   0,  0 ],
+    ['الطارق',     17, 0,   0,  0 ],
+    ['الأعلى',     19, 0,   0,  0 ],
+    ['الغاشية',    26, 0,   0,  0 ],
+    ['الفجر',      30, 0,   0,  0 ],
+    ['البلد',      20, 0,   0,  0 ],
+    ['الشمس',      15, 0,   0,  0 ],
+    ['الليل',      21, 0,   0,  0 ],
+    ['الضحى',      11, 0,   0,  0 ],
+    ['الشرح',       8, 0,   0,  0 ],
+    ['التين',       8, 0,   0,  0 ],
+    ['العلق',      19, 0,   0,  0 ],
+    ['القدر',       5, 0,   0,  0 ],
+    ['البينة',      8, 0,   0,  0 ],
+    ['الزلزلة',     8, 0,   0,  0 ],
+    ['العاديات',   11, 0,   0,  0 ],
+    ['القارعة',    11, 0,   0,  0 ],
+    ['التكاثر',     8, 0,   0,  0 ],
+    ['العصر',       3, 0,   0,  0 ],
+    ['الهمزة',      9, 0,   0,  0 ],
+    ['الفيل',       5, 0,   0,  0 ],
+    ['قريش',        4, 0,   0,  0 ],
+    ['الماعون',     7, 0,   0,  0 ],
+    ['الكوثر',      3, 0,   0,  0 ],
+    ['الكافرون',    6, 0,   0,  0 ],
+    ['النصر',       3, 0,   0,  0 ],
+    ['المسد',       5, 0,   0,  0 ],
+    ['الإخلاص',    4, 0,   0,  0 ],
+    ['الفلق',       5, 0,   0,  0 ],
+    ['الناس',       6, 0,   0,  0 ],
+  ];
+  // ── River Rendering ────────────────────────────────────────────────────────
+  function renderRiver() {
+  const container    = document.getElementById('river');
+  const nameColWidth = window.innerWidth >= 1024 ? 110 : 90;
+  const minWidthPx   = 24;
+  container.innerHTML = '';
+  SURAHS.forEach(([name, ayahs, reviewed, studying, due]) => {
+    // ── Row ────────────────────────────────────────────────────────────────
+    const row     = document.createElement('div');
+    row.className = 'river-row';
+    // ── Surah name ─────────────────────────────────────────────────────────
+    const nameEl              = document.createElement('div');
+    nameEl.className          = 'river-name';
+    nameEl.textContent        = name;
+    nameEl.title              = name;
+    nameEl.style.width        = `${nameColWidth}px`;
+    nameEl.style.flexShrink   = '0';
+    // ── Bar wrapper ────────────────────────────────────────────────────────
+    // flex-grow proportional to ayah count gives correct relative widths.
+    // flex-basis sets the minimum so short Surahs remain tappable.
+    const barWrap             = document.createElement('div');
+    barWrap.className         = 'river-bar-wrap';
+    barWrap.style.flexGrow    = ayahs;
+    barWrap.style.flexShrink  = '1';
+    barWrap.style.flexBasis   = `${minWidthPx}px`;
+    barWrap.style.minWidth    = `${minWidthPx}px`;
+    barWrap.style.width       = 'unset';
+    // ── Segments ───────────────────────────────────────────────────────────
+    const segments = [
+      { pct: reviewed, cls: 'seg-reviewed' },
+      { pct: due,      cls: 'seg-due'      },
+      { pct: studying, cls: 'seg-studying' },
+    ];
+    segments.forEach(({ pct, cls }) => {
+      if (pct <= 0) return;
+      const seg       = document.createElement('div');
+      seg.className   = `seg ${cls}`;
+      seg.style.width = `${pct}%`;
+      barWrap.appendChild(seg);
+    });
+    barWrap.addEventListener('click', () => openModal(name));
+    row.appendChild(nameEl);
+    row.appendChild(barWrap);
+    container.appendChild(row);
+  });
+}
+  // ── Modal ──────────────────────────────────────────────────────────────────
+  function openModal(surahName) {
+    document.getElementById('modal-title').textContent =
+      `Start ${surahName}?`;
+    document.getElementById('modal').classList.add('open');
+  }
+  function closeModal(e) {
+    if (e && e.target !== document.getElementById('modal')) return;
+    document.getElementById('modal').classList.remove('open');
+  }
+  // ── Screen Switching ───────────────────────────────────────────────────────
+  function showScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    document.getElementById('modal').classList.remove('open');
+  }
+  // ── Init ───────────────────────────────────────────────────────────────────
+  // At the bottom of the script, replace the current init block:
+renderHijriDate();
+renderGreeting();
+renderRiver();
+window.addEventListener('resize', () => {
+  renderRiver();
+});
+
+</script>
+</body>
+</html>
