@@ -37,6 +37,20 @@ class ServerModule(config: Config, ws: WsModule):
         serveJs(filename, req)
       // Alignment JSON files served from /data/surah/:filename
       // e.g. GET /data/surah/001_aligned.json
+      case req @ GET -> Root / "data" / "audio" / filename =>
+        println("Serving audio")
+        StaticFile
+          .fromPath(Fs2Path(s"./data/raw_audio/$filename"), Some(req))
+          .getOrElseF(NotFound())
+          .map(x =>
+            x.putHeaders(
+              Header.Raw(
+                ci"Access-Control-Expose-Headers",
+                "Accept-Ranges, Content-Range, Content-Length"
+              )
+            ).putHeaders(Header.Raw(ci"Accept-Ranges", "bytes"))
+          )
+
       case req @ GET -> Root / "data" / "surah" / filename =>
         serveDataAsset(filename, req)
       case req @ GET -> path =>
@@ -70,6 +84,14 @@ class ServerModule(config: Config, ws: WsModule):
     StaticFile
       .fromResource(s"static/data/surah/$filename", Some(req))
       .getOrElseF(NotFound())
+      .map(x =>
+        x.putHeaders(
+          Header.Raw(
+            ci"Access-Control-Expose-Headers",
+            "Accept-Ranges, Content-Range, Content-Length"
+          )
+        )
+      )
   private def routes(wsb: WebSocketBuilder2[IO]): HttpRoutes[IO] =
     val base = wsRoutes(wsb) <+> assetRoutes
     config.assetMode match

@@ -51,8 +51,28 @@ case class PlayerSegment(
     audioUrl: String,
     seekStartMs: Double, // seek position at start of this segment
     stopAtMs: Double, // stop playback at this position
-    words: Vector[PlayerWord] // filtered to this segment's ayah range
+    words: Vector[PlayerWord], // filtered to this segment's ayah range
+    audioService: AudioService
 )
+
+object PlayerSegment:
+  def apply(
+      segIdx: Int,
+      surahNumber: Int,
+      audioUrl: String,
+      seekStartMs: Double, // seek position at start of this segment
+      stopAtMs: Double, // stop playback at this position
+      words: Vector[PlayerWord] // filtered to this segment's ayah range
+  ): PlayerSegment = new PlayerSegment(
+    segIdx,
+    surahNumber,
+    audioUrl,
+    seekStartMs,
+    stopAtMs,
+    words,
+    AudioService.Live(audioUrl, seekStartMs)
+  )
+
 // Tap scoring windows
 enum TapResult:
   case Perfect // delta < 500ms
