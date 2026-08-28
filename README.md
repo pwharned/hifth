@@ -1,8 +1,130 @@
-# Archipelago
+# Hifth
 
-A full-stack Scala 3 web application template built around the islands architecture pattern.
+A Quran memorization toolkit built on word-level audio/text alignment.
 
-## What this is
+Raw recitation audio is force-aligned to the Uthmani text with WhisperX,
+producing millisecond-accurate timestamps for every word. That alignment
+data powers two independent outputs:
+
+1. **A full-stack web app** ("Archipelago") — a Scala 3 / ScalaJS study
+   player with an SRS-driven queue (SM-2), an audio-synced player with a
+   progressive cloze mask (0→95%), tap-to-score recall, and streaks —
+   organized around the Quran's 240 Quarter-Hizb (QH) sections.
+2. **An Anki export pipeline** — a standalone Python script that turns the
+   same alignment data into a deck of interactive flashcards (one per QH),
+   without needing any of the app's backend/frontend/SRS machinery.
+
+Both consume the same `data/output/verified/<surah>_aligned.json` files;
+neither depends on the other.
+
+## Project structure
+
+```
+src/quran_alignment/ - Python alignment pipeline (normalize → align → validate)
+scripts/             - pipeline runner + Anki deck generator
+data/
+  raw_audio/         - source MP3s per Surah (001.mp3 ... 114.mp3)
+  text/              - cached Uthmani text per Surah
+  processed_audio/   - normalized 16kHz mono WAVs (pipeline output)
+  output/
+    aligned/         - raw WhisperX alignment output (pre-QA)
+    verified/        - QA-passed alignment JSON (promoted from aligned/)
+    anki/            - generated .apkg deck output
+
+shared/     - domain models and WS message ADTs, compiled for JVM and JS (web app)
+backend/    - http4s server, WebSocket handler, static asset serving (web app)
+frontend/   - Laminar islands, compiled to ES modules (web app)
+static/     - plain HTML files (not generated, not templated) (web app)
+```
+
+## Generating alignment data for the entire Quran
+
+The alignment pipeline (`src/quran_alignment/`) is what everything else is
+built on: it turns raw recitation MP3s + the Uthmani text into per-word
+millisecond timestamps, one JSON file per Surah.
+
+### 1. Environment
+
+```bash
+conda env create -f environment.yml
+conda activate quran
+```
+
+Requires `ffmpeg` on PATH (used both by the pipeline and the Anki audio
+export) and a CUDA GPU for reasonable `align` speed (`--device cpu` works
+but is much slower for `medium`-sized Whisper).
+
+### 2. Inputs
+
+Place source files before running anything:
+
+- `data/raw_audio/<NNN>.mp3` — one recitation file per Surah (`001.mp3` … `114.mp3`)
+- `data/text/<NNN>_uthmani.json` — cached canonical Uthmani text per Surah
+
+### 3. Run the pipeline
+
+Each Surah goes through three steps — `normalize` (→ 16kHz mono WAV) →
+`align` (two-pass WhisperX transcription + forced alignment) → `validate`
+(QA checks; promotes `data/output/aligned/` → `data/output/verified/` on
+success, and copies the verified JSON into the backend's static
+resources for the web app).
+
+For the **entire Quran** (all 114 Surahs):
+
+```bash
+python scripts/run_pipeline.py --all --device cuda
+```
+
+For a subset (e.g. resuming after a failure, or just a few Surahs):
+
+```bash
+python scripts/run_pipeline.py --surahs 1 2 3 --device cpu
+```
+
+The runner prints a pass/fail summary at the end and exits non-zero if
+any Surah failed. Failures are typically `validate` QA rejections
+(silence gaps, negative durations, word-count mismatches) — inspect the
+report written next to `data/output/aligned/<NNN>_aligned.json` and
+re-run the specific step (`python -m src.quran_alignment.align --surah N ...`)
+after fixing the input.
+
+Only Surahs present in `data/output/verified/` are usable by either
+downstream output (web app or Anki export) — partial Quran coverage is
+fine, both consumers simply skip whatever isn't verified yet.
+
+## Generating a full Anki deck
+
+Once some (or all) Surahs are verified, generate the interactive
+Quarter-Hizb flashcard deck:
+
+```bash
+python -m pip install genanki   # one-time
+python scripts/generate_anki_cards.py
+```
+
+This produces `data/output/anki/quran_quarter_hizb.apkg`, ready to import
+into Anki, covering every Quarter-Hizb whose required Surahs are all
+verified. Useful flags:
+
+```bash
+python scripts/generate_anki_cards.py --qh-start 1 --qh-end 20   # subset, e.g. while verifying incrementally
+python scripts/generate_anki_cards.py --no-audio                  # skip ffmpeg trimming (faster, smaller deck)
+python scripts/generate_anki_cards.py --out my_deck.apkg --deck-name "Quran::My Deck"
+```
+
+Each card embeds an adjustable cloze slider (0/10/25/50/75/90/95%, same
+masking algorithm and seeding as the web app's player) over the full
+Quarter-Hizb text — the whole card is the memorization target, not a
+single hidden word as in native Anki cloze. The Back reveals the full
+text plus the trimmed/concatenated audio for that QH. See
+`scripts/anki_export/README.md` for implementation details and caveats.
+
+Re-running the generator after verifying more Surahs is safe and
+idempotent — note GUIDs are stable per QH id, so re-importing the
+updated deck into Anki updates existing cards rather than duplicating
+them.
+
+## Web app architecture
 
 The core idea: the server serves plain HTML pages. Interactive functionality is provided by small, independent ScalaJS modules ("islands") that mount into specific elements on the page. All client-server communication goes through a single WebSocket connection using a shared typed message protocol.
 
@@ -14,15 +136,6 @@ No REST endpoints. No SPA framework. No shared mutable state between islands exc
 - **Frontend**: ScalaJS + Laminar
 - **Shared**: Scala 3 cross-compiled domain models and WebSocket protocol
 - **Serialization**: jsoniter-scala
-
-## Project structure
-
-```
-shared/     - domain models and WS message ADTs, compiled for JVM and JS
-backend/    - http4s server, WebSocket handler, static asset serving
-frontend/   - Laminar islands, compiled to ES modules
-static/     - plain HTML files (not generated, not templated)
-```
 
 ## How it works
 
