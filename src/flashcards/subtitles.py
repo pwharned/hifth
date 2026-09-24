@@ -143,16 +143,37 @@ def tokenize_base_units(text: str) -> tuple[BaseToken, ...]:
     def is_word_character(character: str) -> bool:
         return character == "_" or unicodedata.category(character)[0] in {"L", "M", "N"}
 
+    def is_compact_script_character(character: str) -> bool:
+        codepoint = ord(character)
+        return (
+            0x3040 <= codepoint <= 0x30FF  # Hiragana and Katakana
+            or 0x31F0 <= codepoint <= 0x31FF
+            or 0x3400 <= codepoint <= 0x4DBF  # CJK ideographs
+            or 0x4E00 <= codepoint <= 0x9FFF
+            or 0xF900 <= codepoint <= 0xFAFF
+            or 0xFF66 <= codepoint <= 0xFF9F  # Halfwidth Katakana
+            or 0x20000 <= codepoint <= 0x323AF
+            or 0x0E00 <= codepoint <= 0x0EFF  # Thai and Lao
+            or 0x1000 <= codepoint <= 0x109F  # Myanmar
+            or 0x1780 <= codepoint <= 0x17FF  # Khmer
+            or 0xA9E0 <= codepoint <= 0xA9FF
+            or 0xAA60 <= codepoint <= 0xAA7F
+        )
+
     while index < len(text):
         if text[index].isspace():
             index += 1
             continue
         start = index
-        if is_word_character(text[index]):
+        if is_compact_script_character(text[index]):
+            index += 1
+            while index < len(text) and unicodedata.category(text[index])[0] == "M":
+                index += 1
+        elif is_word_character(text[index]):
             index += 1
             while index < len(text):
                 character = text[index]
-                if is_word_character(character):
+                if is_word_character(character) and not is_compact_script_character(character):
                     index += 1
                     continue
                 if (

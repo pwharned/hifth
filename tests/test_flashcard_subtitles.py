@@ -80,6 +80,18 @@ Xin <00:02.000>chào!
             [arabic_with_mark],
         )
 
+    def test_no_space_scripts_use_character_sized_base_units(self) -> None:
+        chinese = tokenize_base_units("我是学生。")
+        self.assertEqual([token.text for token in chinese], ["我", "是", "学", "生", "。"])
+        self.assertEqual(
+            chinese[2].span.extract("我是学生。") + chinese[3].span.extract("我是学生。"),
+            "学生",
+        )
+        self.assertEqual(
+            [token.text for token in tokenize_base_units("ﾆﾎﾝｺﾞ")],
+            ["ﾆ", "ﾎ", "ﾝ", "ｺ", "ﾞ"],
+        )
+
     def test_bad_timing_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "later"):
             parse_subtitles("1\n00:00:02,000 --> 00:00:01,000\nBad\n")

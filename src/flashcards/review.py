@@ -18,14 +18,28 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
+from .analysis import (
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_URL,
+    AnalysisCache,
+    AnalysisError,
+    AnalysisService,
+    AnalysisValidationError,
+    LearningUnitSuggestion,
+    ModelUnavailableError,
+    OllamaAnalyzer,
+    SentenceAnalysis,
+)
 from .export import export_manifest_apkg, load_manifest
 from .models import (
     AudioSpan,
     CardDraft,
     ClozePolicy,
+    LearningComponent,
     LearningUnit,
     LearningUnitKind,
     ProjectManifest,
+    Utterance,
     stable_card_id,
 )
 
@@ -81,15 +95,7 @@ class ReviewProject:
                 raise FileNotFoundError(f"Media file not found: {path}")
             return path
 
-    def upsert_card(self, payload: dict[str, Any]) -> CardDraft:
-        if not isinstance(payload, dict):
-            raise ValueError("request body must be an object")
-        utterance_id = payload.get("utterance_id")
-        if not isinstance(utterance_id, str) or not utterance_id.strip():
-            raise ValueError("utterance_id must be a nonempty string")
-        token_start = _token_index(payload.get("token_start"), "token_start")
-        token_end = _token_index(payload.get("token_end"), "token_end")
-
+    def get_utterance(self, utterance_id: str) -> Utterance:
         with self._lock:
             utterance = next(
                 (item for item in self.manifest.utterances if item.id == utterance_id),
@@ -97,6 +103,31 @@ class ReviewProject:
             )
             if utterance is None:
                 raise ValueError(f"unknown utterance: {utterance_id}")
+            return utterance
+
+    def upsert_card(
+        self,
+        payload: dict[str, Any],
+        suggestion: tuple[SentenceAnalysis, LearningUnitSuggestion] | None = None,
+    ) -> CardDraft:
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be an object")
+        reserved_evidence_fields = {
+            "components",
+            "analysis_model",
+            "analysis_digest",
+            "prompt_version",
+        }
+        if reserved_evidence_fields.intersection(payload):
+            raise ValueError("model evidence must be verified by the reviewer service")
+        utterance_id = payload.get("utterance_id")
+        if not isinstance(utterance_id, str) or not utterance_id.strip():
+            raise ValueError("utterance_id must be a nonempty string")
+        token_start = _token_index(payload.get("token_start"), "token_start")
+        token_end = _token_index(payload.get("token_end"), "token_end")
+
+        with self._lock:
+            utterance = self.get_utterance(utterance_id)
             target_span = utterance.span_for_tokens(token_start, token_end)
             card_id = stable_card_id(
                 utterance.media_id,
@@ -121,6 +152,45 @@ class ReviewProject:
                 payload.get("sentence_translation"), "sentence_translation"
             )
             analysis = _optional_text(payload.get("analysis"), "analysis")
+            existing_card = next(
+                (item for item in self.manifest.cards if item.id == card_id),
+                None,
+            )
+            existing_unit = next(
+                (
+                    item
+                    for item in self.manifest.learning_units
+                    if item.id == f"unit-{card_id[:24]}"
+                ),
+                None,
+            )
+            if suggestion is not None:
+                sentence_analysis, candidate = suggestion
+                if not isinstance(sentence_analysis, SentenceAnalysis) or not isinstance(
+                    candidate, LearningUnitSuggestion
+                ):
+                    raise ValueError("suggestion must contain validated analysis objects")
+                if candidate not in sentence_analysis.candidates:
+                    raise ValueError("suggestion candidate is not part of its sentence analysis")
+                if (candidate.token_start, candidate.token_end) != (token_start, token_end):
+                    raise ValueError("suggestion does not match the selected token range")
+                components = tuple(
+                    LearningComponent(component.surface, component.gloss)
+                    for component in candidate.components
+                )
+                provenance = (
+                    "manual-review",
+                    f"model:{sentence_analysis.model}",
+                    f"model-digest:{sentence_analysis.model_digest}",
+                    f"prompt:{sentence_analysis.prompt_version}",
+                )
+            else:
+                components = existing_unit.components if existing_unit is not None else ()
+                provenance = (
+                    existing_card.provenance
+                    if existing_card is not None
+                    else ("manual-review",)
+                )
             card = CardDraft(
                 id=card_id,
                 media_id=utterance.media_id,
@@ -140,7 +210,7 @@ class ReviewProject:
                     utterance.end_ms,
                 ),
                 tags=tags,
-                provenance=("manual-review",),
+                provenance=provenance,
             )
             unit = LearningUnit(
                 id=f"unit-{card_id[:24]}",
@@ -150,7 +220,8 @@ class ReviewProject:
                 token_start=token_start,
                 token_end=token_end,
                 contextual_gloss=target_gloss,
-                evidence=("manual-review",),
+                components=components,
+                evidence=provenance,
             )
             cards = self._upsert_by_id(self.manifest.cards, card)
             units = self._upsert_by_id(self.manifest.learning_units, unit)
@@ -214,7 +285,68 @@ def _handler(
     project: ReviewProject,
     static_dir: Path,
     access_token: str,
+    analysis_service: AnalysisService | None = None,
+    translation_language: str = "English",
 ) -> type[BaseHTTPRequestHandler]:
+    def api_payload() -> dict[str, Any]:
+        payload = project.api_payload()
+        payload["analysis"] = (
+            analysis_service.status()
+            if analysis_service is not None
+            else {
+                "enabled": False,
+                "available": False,
+                "error": "Local model analysis is disabled",
+            }
+        )
+        payload["analysis"]["translation_language"] = translation_language
+        return payload
+
+    def verified_suggestion(
+        request: dict[str, Any],
+    ) -> tuple[SentenceAnalysis, LearningUnitSuggestion] | None:
+        reference = request.pop("analysis_ref", None)
+        if reference is None:
+            return None
+        if analysis_service is None:
+            raise ValueError("model analysis is disabled")
+        if not isinstance(reference, dict) or set(reference) != {
+            "model",
+            "model_digest",
+            "prompt_version",
+        }:
+            raise ValueError(
+                "analysis_ref must contain exactly model, model_digest, and prompt_version"
+            )
+        utterance_id = request.get("utterance_id")
+        if not isinstance(utterance_id, str):
+            raise ValueError("utterance_id must be a nonempty string")
+        token_start = _token_index(request.get("token_start"), "token_start")
+        token_end = _token_index(request.get("token_end"), "token_end")
+        result = analysis_service.analyze(
+            project.get_utterance(utterance_id),
+            project.manifest.language,
+            translation_language,
+        )
+        expected_reference = {
+            "model": result.model,
+            "model_digest": result.model_digest,
+            "prompt_version": result.prompt_version,
+        }
+        if reference != expected_reference:
+            raise ValueError("analysis_ref does not match the current validated analysis")
+        candidate = next(
+            (
+                item
+                for item in result.candidates
+                if (item.token_start, item.token_end) == (token_start, token_end)
+            ),
+            None,
+        )
+        if candidate is None:
+            raise ValueError("selected token range is not a validated model suggestion")
+        return result, candidate
+
     class ReviewHandler(BaseHTTPRequestHandler):
         server_version = "FlashcardReviewer/1"
 
@@ -226,7 +358,7 @@ def _handler(
                 return
             try:
                 if path == "/api/project":
-                    self._json(HTTPStatus.OK, project.api_payload())
+                    self._json(HTTPStatus.OK, api_payload())
                 elif path.startswith("/media/"):
                     self._media(project.resolve_media(path.removeprefix("/media/")))
                 else:
@@ -246,8 +378,27 @@ def _handler(
                 return
             try:
                 if path == "/api/cards":
-                    card = project.upsert_card(self._request_json())
-                    self._json(HTTPStatus.OK, {"card_id": card.id, **project.api_payload()})
+                    request = self._request_json()
+                    card = project.upsert_card(request, verified_suggestion(request))
+                    self._json(HTTPStatus.OK, {"card_id": card.id, **api_payload()})
+                elif path == "/api/analyze":
+                    if analysis_service is None:
+                        self._error(HTTPStatus.SERVICE_UNAVAILABLE, "Local model analysis is disabled")
+                        return
+                    request = self._request_json()
+                    utterance_id = request.get("utterance_id")
+                    if not isinstance(utterance_id, str) or not utterance_id.strip():
+                        raise ValueError("utterance_id must be a nonempty string")
+                    refresh = request.get("refresh", False)
+                    if type(refresh) is not bool:
+                        raise ValueError("refresh must be a boolean")
+                    result = analysis_service.analyze(
+                        project.get_utterance(utterance_id),
+                        project.manifest.language,
+                        translation_language,
+                        refresh,
+                    )
+                    self._json(HTTPStatus.OK, {"analysis": result.to_dict()})
                 elif path == "/api/export":
                     output = project.export()
                     self._json(
@@ -256,6 +407,12 @@ def _handler(
                     )
                 else:
                     self._error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+            except ModelUnavailableError as exc:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, str(exc))
+            except AnalysisValidationError as exc:
+                self._error(HTTPStatus.BAD_GATEWAY, str(exc))
+            except AnalysisError as exc:
+                self._error(HTTPStatus.BAD_GATEWAY, str(exc))
             except (ValueError, FileNotFoundError) as exc:
                 self._error(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception as exc:
@@ -275,7 +432,7 @@ def _handler(
                 return
             try:
                 project.delete_card(match.group(1))
-                self._json(HTTPStatus.OK, project.api_payload())
+                self._json(HTTPStatus.OK, api_payload())
             except ValueError as exc:
                 self._error(HTTPStatus.BAD_REQUEST, str(exc))
 
@@ -405,6 +562,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--model", default=DEFAULT_OLLAMA_MODEL)
+    parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL)
+    parser.add_argument("--translation-language", default="English")
+    parser.add_argument("--no-analysis", action="store_true")
     return parser.parse_args()
 
 
@@ -413,17 +574,35 @@ def main() -> None:
     if not 1 <= args.port <= 65_535:
         raise SystemExit("--port must be between 1 and 65535")
     project = ReviewProject(args.manifest, args.out)
+    analysis_service = None
+    if not args.no_analysis:
+        analysis_service = AnalysisService(
+            OllamaAnalyzer(model=args.model, base_url=args.ollama_url),
+            AnalysisCache(project.manifest_path.with_suffix(".analysis-cache.json")),
+        )
     static_dir = Path(__file__).resolve().parent / "reviewer_static"
     if not static_dir.is_dir():
         raise SystemExit(f"Reviewer assets not found: {static_dir}")
     access_token = secrets.token_urlsafe(32)
     server = ThreadingHTTPServer(
         (args.host, args.port),
-        _handler(project, static_dir, access_token),
+        _handler(
+            project,
+            static_dir,
+            access_token,
+            analysis_service,
+            args.translation_language,
+        ),
     )
     url = f"http://{args.host}:{args.port}/?token={quote(access_token)}"
     print(f"Reviewing {project.manifest.title!r} at {url}")
     print(f"Cards are saved to {project.manifest_path}")
+    if analysis_service is not None:
+        model_status = analysis_service.status()
+        if model_status["available"]:
+            print(f"Learning-unit analysis: {model_status['model']}")
+        else:
+            print(f"Learning-unit analysis unavailable: {model_status['error']}")
     if not args.no_browser:
         webbrowser.open(url)
     try:

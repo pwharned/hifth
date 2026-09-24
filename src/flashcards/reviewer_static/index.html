@@ -54,6 +54,21 @@
         <button id="clearSelection" class="button quiet danger-text">Clear</button>
       </div>
 
+      <section class="suggestion-panel" aria-labelledby="suggestionHeading">
+        <div class="suggestion-header">
+          <div>
+            <span class="preview-label">Local model</span>
+            <h2 id="suggestionHeading">Suggested learning units</h2>
+          </div>
+          <div class="model-actions">
+            <span id="modelBadge" class="model-badge">Checking model</span>
+            <button id="analyzeButton" class="button quiet" type="button">Analyze again</button>
+          </div>
+        </div>
+        <p id="analysisStatus" class="analysis-status">Waiting for analysis.</p>
+        <div id="suggestions" class="suggestions"></div>
+      </section>
+
       <div class="cloze-preview">
         <span class="preview-label">Card front</span>
         <div id="clozePreview">Select one or more tokens.</div>

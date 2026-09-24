@@ -12,6 +12,12 @@
     statusTimer: null,
     currentMediaId: null,
     token: null,
+    analyses: new Map(),
+    analysisRequests: new Map(),
+    analysisErrors: new Map(),
+    appliedSuggestion: null,
+    analysisTimer: null,
+    pendingAnalysis: null,
   };
 
   const byId = (id) => document.getElementById(id);
@@ -55,16 +61,27 @@
     return `${minutes}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
   }
 
-  function setSelection(start, end) {
+  function setSelection(start, end, preserveSuggestion = false) {
     const count = cue().tokens.length;
     const boundedStart = Math.max(0, Math.min(start, count - 1));
     const boundedEnd = Math.max(boundedStart + 1, Math.min(end, count));
     state.selection = { start: boundedStart, end: boundedEnd };
+    if (
+      !preserveSuggestion
+      && state.appliedSuggestion
+      && (
+        state.appliedSuggestion.candidate.token_start !== boundedStart
+        || state.appliedSuggestion.candidate.token_end !== boundedEnd
+      )
+    ) {
+      state.appliedSuggestion = null;
+    }
     renderSelection();
   }
 
   function clearSelection() {
     state.selection = null;
+    state.appliedSuggestion = null;
     renderSelection();
   }
 
@@ -90,6 +107,7 @@
       byId("clozePreview").textContent = `${sliceText(text, 0, span.start)}{{c1::${sliceText(text, span.start, span.end)}}}${sliceText(text, span.end)}`;
     }
     updateBoundaryButtons();
+    renderSuggestions();
   }
 
   function updateBoundaryButtons() {
@@ -147,6 +165,7 @@
   }
 
   function loadCard(card) {
+    state.appliedSuggestion = null;
     const tokens = cue().tokens;
     const start = tokens.findIndex((token) => token.span.start_char === card.target_span.start_char);
     const endIndex = tokens.findIndex((token) => token.span.end_char === card.target_span.end_char);
@@ -213,8 +232,9 @@
   }
 
   function resetForm() {
+    const currentAnalysis = state.analyses.get(cue().id);
     byId("targetGloss").value = "";
-    byId("sentenceTranslation").value = cue().translation || "";
+    byId("sentenceTranslation").value = currentAnalysis?.sentence_translation || cue().translation || "";
     byId("analysis").value = "";
     byId("tags").value = "";
     byId("unitKind").value = "unknown";
@@ -223,6 +243,7 @@
   function selectCue(index) {
     state.cueIndex = Math.max(0, Math.min(index, project().utterances.length - 1));
     state.selection = null;
+    state.appliedSuggestion = null;
     const current = cue();
     mountPlayer(current.media_id);
     byId("cueNumber").textContent = `Cue ${state.cueIndex + 1} / ${project().utterances.length}`;
@@ -232,6 +253,207 @@
     renderTokens();
     resetForm();
     renderCueCards();
+    updateModelStatus();
+    renderSuggestions();
+    window.clearTimeout(state.analysisTimer);
+    state.analysisTimer = window.setTimeout(() => analyzeCue(false), 250);
+  }
+
+  function currentAnalysis() {
+    const analysis = state.analyses.get(cue().id) || null;
+    const configuredDigest = state.payload.analysis?.digest;
+    if (analysis && configuredDigest && analysis.model_digest !== configuredDigest) {
+      return null;
+    }
+    return analysis;
+  }
+
+  function updateModelStatus() {
+    const config = state.payload.analysis;
+    const badge = byId("modelBadge");
+    if (!config?.enabled) {
+      badge.textContent = "analysis disabled";
+      badge.className = "model-badge unavailable";
+      byId("analyzeButton").disabled = true;
+      return;
+    }
+    badge.textContent = config.model;
+    badge.title = config.digest || config.model;
+    badge.className = `model-badge ${config.available ? "available" : "unavailable"}`;
+    byId("analyzeButton").disabled = state.analysisRequests.has(cue().id);
+  }
+
+  function candidateContainsSelection(candidate) {
+    if (!state.selection) return false;
+    return candidate.token_start <= state.selection.start
+      && candidate.token_end >= state.selection.end;
+  }
+
+  function suggestionNote(candidate) {
+    const componentText = candidate.components.length
+      ? `Components: ${candidate.components.map((component) => `${component.surface} = ${component.gloss}`).join("; ")}`
+      : null;
+    return [candidate.reason, componentText].filter(Boolean).join("\n");
+  }
+
+  function applySuggestion(candidate, analysis) {
+    setSelection(candidate.token_start, candidate.token_end, true);
+    state.appliedSuggestion = { candidate, analysis };
+    byId("targetGloss").value = candidate.contextual_gloss;
+    byId("sentenceTranslation").value = analysis.sentence_translation;
+    byId("unitKind").value = candidate.kind;
+    byId("analysis").value = suggestionNote(candidate);
+    renderSuggestions();
+    showStatus(`Selected suggested unit "${candidate.surface}".`);
+  }
+
+  function renderSuggestions() {
+    const mount = byId("suggestions");
+    if (!mount || !state.payload) return;
+    mount.replaceChildren();
+    const analysis = currentAnalysis();
+    const config = state.payload.analysis;
+    if (!config?.enabled) {
+      byId("analysisStatus").textContent = "Start the reviewer without --no-analysis to enable suggestions.";
+      return;
+    }
+    if (!analysis) {
+      if (!config.available) {
+        byId("analysisStatus").textContent = config.pull_command
+          ? `Model unavailable. Run: ${config.pull_command}`
+          : config.error || "The local model is unavailable.";
+      } else if (state.analysisRequests.has(cue().id)) {
+        byId("analysisStatus").textContent = "Analyzing this cue locally...";
+      } else if (state.analysisErrors.has(cue().id)) {
+        byId("analysisStatus").textContent = state.analysisErrors.get(cue().id);
+      } else {
+        byId("analysisStatus").textContent = "Waiting for local analysis.";
+      }
+      return;
+    }
+
+    byId("analysisStatus").textContent = `${analysis.candidates.length} candidate${analysis.candidates.length === 1 ? "" : "s"}; click one to use its exact span.`;
+    const candidates = [...analysis.candidates].sort((left, right) => {
+      const containingDifference = Number(candidateContainsSelection(right)) - Number(candidateContainsSelection(left));
+      if (containingDifference) return containingDifference;
+      const recommendationDifference = Number(right.recommended_as_unit) - Number(left.recommended_as_unit);
+      if (recommendationDifference) return recommendationDifference;
+      return (right.token_end - right.token_start) - (left.token_end - left.token_start);
+    });
+    candidates.forEach((candidate) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = [
+        "suggestion",
+        candidate.recommended_as_unit ? "recommended" : "",
+        candidateContainsSelection(candidate) ? "containing" : "",
+      ].filter(Boolean).join(" ");
+      const heading = document.createElement("div");
+      heading.className = "suggestion-title";
+      const surface = document.createElement("span");
+      surface.className = "suggestion-surface";
+      surface.textContent = candidate.surface;
+      const labels = document.createElement("span");
+      labels.className = "suggestion-kind";
+      labels.textContent = candidate.kind.replaceAll("_", " ");
+      heading.append(surface, labels);
+      if (candidate.recommended_as_unit) {
+        const recommended = document.createElement("span");
+        recommended.className = "recommended-label";
+        recommended.textContent = "learn together";
+        heading.append(recommended);
+      }
+      const gloss = document.createElement("div");
+      gloss.className = "suggestion-gloss";
+      gloss.textContent = candidate.contextual_gloss;
+      const reason = document.createElement("div");
+      reason.className = "suggestion-reason";
+      reason.textContent = candidate.reason;
+      button.append(heading, gloss, reason);
+      button.addEventListener("click", () => applySuggestion(candidate, analysis));
+      mount.append(button);
+    });
+  }
+
+  async function analyzeCue(refresh) {
+    const current = cue();
+    const config = state.payload.analysis;
+    if (!config?.enabled) return;
+    if (refresh) {
+      state.analyses.delete(current.id);
+      if (current.id === cue().id) state.appliedSuggestion = null;
+      if (current.id === cue().id) renderSuggestions();
+    }
+    if (!refresh && currentAnalysis()) return;
+    if (state.analysisRequests.has(current.id)) {
+      if (refresh) state.pendingAnalysis = { cueId: current.id, refresh: true };
+      return;
+    }
+    if (state.analysisRequests.size > 0) {
+      const pendingRefresh = state.pendingAnalysis?.cueId === current.id
+        && state.pendingAnalysis.refresh;
+      state.pendingAnalysis = {
+        cueId: current.id,
+        refresh: Boolean(refresh || pendingRefresh),
+      };
+      return;
+    }
+    if (!refresh && !config.available) {
+      renderSuggestions();
+      return;
+    }
+
+    const requestMarker = Symbol(current.id);
+    state.analysisErrors.delete(current.id);
+    state.analysisRequests.set(current.id, requestMarker);
+    if (current.id === cue().id) {
+      updateModelStatus();
+      renderSuggestions();
+    }
+    try {
+      const result = await request("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ utterance_id: current.id, refresh }),
+      });
+      if (state.analysisRequests.get(current.id) !== requestMarker) return;
+      if (current.id === cue().id) state.appliedSuggestion = null;
+      state.analyses.set(current.id, result.analysis);
+      state.analysisErrors.delete(current.id);
+      state.payload.analysis = {
+        ...state.payload.analysis,
+        available: true,
+        model: result.analysis.model,
+        digest: result.analysis.model_digest,
+        error: null,
+      };
+      if (current.id === cue().id) {
+        if (!byId("sentenceTranslation").value) {
+          byId("sentenceTranslation").value = result.analysis.sentence_translation;
+        }
+        updateModelStatus();
+        renderSuggestions();
+      }
+    } catch (error) {
+      state.analysisErrors.set(current.id, error.message);
+      if (current.id === cue().id) {
+        byId("analysisStatus").textContent = error.message;
+        showStatus(error.message, true);
+      }
+    } finally {
+      if (state.analysisRequests.get(current.id) === requestMarker) {
+        state.analysisRequests.delete(current.id);
+      }
+      if (current.id === cue().id) {
+        updateModelStatus();
+        renderSuggestions();
+      }
+      const pending = state.pendingAnalysis;
+      state.pendingAnalysis = null;
+      if (pending && pending.cueId === cue().id) {
+        window.setTimeout(() => analyzeCue(pending.refresh), 0);
+      }
+    }
   }
 
   function playCurrentCue() {
@@ -257,6 +479,13 @@
       analysis: byId("analysis").value,
       kind: byId("unitKind").value,
       tags,
+      analysis_ref: state.appliedSuggestion
+        ? {
+            model: state.appliedSuggestion.analysis.model,
+            model_digest: state.appliedSuggestion.analysis.model_digest,
+            prompt_version: state.appliedSuggestion.analysis.prompt_version,
+          }
+        : null,
     };
     try {
       const result = await request("/api/cards", {
@@ -268,6 +497,7 @@
         project: result.project,
         export_path: result.export_path,
         media_urls: result.media_urls,
+        analysis: result.analysis,
       };
       renderCueCards();
       updateCardCount();
@@ -355,6 +585,7 @@
     byId("playCue").addEventListener("click", playCurrentCue);
     byId("cardForm").addEventListener("submit", saveCard);
     byId("exportButton").addEventListener("click", exportDeck);
+    byId("analyzeButton").addEventListener("click", () => analyzeCue(true));
     byId("searchButton").addEventListener("click", findNextCue);
     byId("cueSearch").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {

@@ -1,3 +1,17 @@
+from .analysis import (
+    ANALYSIS_PROMPT_VERSION,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_URL,
+    AnalysisCache,
+    AnalysisComponent,
+    AnalysisError,
+    AnalysisService,
+    AnalysisValidationError,
+    LearningUnitSuggestion,
+    ModelUnavailableError,
+    OllamaAnalyzer,
+    SentenceAnalysis,
+)
 from .cloze import build_cloze
 from .anki import PreparedCard, export_apkg, render_fields
 from .media import (
@@ -27,6 +41,14 @@ from .models import (
 
 __all__ = [
     "CURRENT_SCHEMA_VERSION",
+    "ANALYSIS_PROMPT_VERSION",
+    "DEFAULT_OLLAMA_MODEL",
+    "DEFAULT_OLLAMA_URL",
+    "AnalysisCache",
+    "AnalysisComponent",
+    "AnalysisError",
+    "AnalysisService",
+    "AnalysisValidationError",
     "AudioSpan",
     "BaseToken",
     "CardDraft",
@@ -34,10 +56,14 @@ __all__ = [
     "LearningComponent",
     "LearningUnit",
     "LearningUnitKind",
+    "LearningUnitSuggestion",
     "MediaSource",
     "MediaProcessingError",
+    "ModelUnavailableError",
+    "OllamaAnalyzer",
     "PreparedCard",
     "ProjectManifest",
+    "SentenceAnalysis",
     "TextSpan",
     "Utterance",
     "build_cloze",

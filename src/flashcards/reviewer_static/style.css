@@ -138,6 +138,54 @@ h2 { font-size: 17px; font-weight: 650; }
 .selection-controls { flex-wrap: wrap; }
 .selection-controls .button { padding: 6px 9px; font-size: 11px; }
 
+.suggestion-panel {
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  background: #1a1b18;
+}
+.suggestion-header, .model-actions, .suggestion-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.model-actions { justify-content: flex-end; }
+.model-badge {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 4px 7px;
+  border: 1px solid #4b4d46;
+  border-radius: 2px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-badge.available { border-color: #52725a; color: #9fcca9; }
+.model-badge.unavailable { border-color: #744a43; color: #e2a096; }
+.analysis-status { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.suggestions { display: grid; gap: 8px; margin-top: 14px; }
+.suggestion {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #353730;
+  border-radius: 2px;
+  background: #20211d;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+.suggestion:hover { border-color: #6a6658; background: #25261f; }
+.suggestion.containing { border-color: var(--saffron-dark); }
+.suggestion.recommended { box-shadow: inset 3px 0 0 var(--saffron); }
+.suggestion-surface { color: var(--saffron); font-family: Georgia, serif; font-size: 18px; }
+.suggestion-kind { color: var(--muted); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+.suggestion-gloss { margin-top: 4px; color: #ddd9ce; font-size: 13px; }
+.suggestion-reason { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.recommended-label { color: var(--saffron); font-size: 10px; font-weight: 750; text-transform: uppercase; }
+
 .cloze-preview {
   margin: 28px 0;
   padding: 18px 20px;
@@ -206,5 +254,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--saffron); box-sh
   .section-heading { align-items: start; flex-direction: column; gap: 5px; }
   .instruction { text-align: left; }
   .form-row { flex-direction: column; align-items: stretch; }
+  .suggestion-header { align-items: flex-start; flex-direction: column; }
+  .model-actions { width: 100%; justify-content: space-between; }
   .transcript { padding: 16px; min-height: 110px; }
 }

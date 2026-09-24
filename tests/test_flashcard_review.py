@@ -15,7 +15,47 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from flashcards import BaseToken, MediaSource, ProjectManifest, TextSpan, Utterance  # noqa: E402
+from flashcards.analysis import (  # noqa: E402
+    AnalysisComponent,
+    LearningUnitSuggestion,
+    SentenceAnalysis,
+)
+from flashcards.models import LearningUnitKind  # noqa: E402
 from flashcards.review import ReviewProject, _handler  # noqa: E402
+
+
+class StubAnalysisService:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def status(self):
+        return {
+            "enabled": True,
+            "available": True,
+            "model": "test-model",
+            "digest": "test-digest",
+        }
+
+    def analyze(self, utterance, language, translation_language, refresh=False):
+        self.calls.append((utterance.id, language, translation_language, refresh))
+        return SentenceAnalysis(
+            sentence_translation="fish and fish",
+            candidates=(
+                LearningUnitSuggestion(
+                    token_start=0,
+                    token_end=1,
+                    surface="fish",
+                    contextual_gloss="fish",
+                    kind=LearningUnitKind.WORD,
+                    recommended_as_unit=True,
+                    reason="An independently useful word.",
+                    components=(AnalysisComponent("fish", "fish"),),
+                ),
+            ),
+            model="test-model",
+            model_digest="test-digest",
+            prompt_version="1",
+        )
 
 
 class ReviewProjectTests(unittest.TestCase):
@@ -110,13 +150,63 @@ class ReviewProjectTests(unittest.TestCase):
                 }
             )
 
+    def test_model_components_and_provenance_are_persisted(self) -> None:
+        service = StubAnalysisService()
+        analysis = service.analyze(
+            self.project.get_utterance("utterance"),
+            "en",
+            "English",
+            False,
+        )
+        card = self.project.upsert_card(
+            {
+                "utterance_id": "utterance",
+                "token_start": 0,
+                "token_end": 1,
+                "kind": "word",
+                "tags": [],
+            },
+            (analysis, analysis.candidates[0]),
+        )
+        unit = self.project.manifest.learning_units[0]
+        self.assertEqual(unit.components[0].text, "fish")
+        self.assertIn("model:test-model", unit.evidence)
+        self.assertEqual(card.provenance, unit.evidence)
+
+        updated = self.project.upsert_card(
+            {
+                "utterance_id": "utterance",
+                "token_start": 0,
+                "token_end": 1,
+                "kind": "word",
+                "target_gloss": "edited gloss",
+                "tags": [],
+            }
+        )
+        self.assertEqual(updated.provenance, card.provenance)
+        self.assertEqual(self.project.manifest.learning_units[0].components, unit.components)
+
+        with self.assertRaisesRegex(ValueError, "verified by the reviewer"):
+            self.project.upsert_card(
+                {
+                    "utterance_id": "utterance",
+                    "token_start": 0,
+                    "token_end": 1,
+                    "components": [],
+                    "tags": [],
+                }
+            )
+
     def test_local_http_api_and_media_ranges(self) -> None:
         media_path = self.root / "movie.mp4"
         media_path.write_bytes(b"0123456789")
+        analysis_service = StubAnalysisService()
         handler_type = _handler(
             self.project,
             Path(__file__).resolve().parents[1] / "src" / "flashcards" / "reviewer_static",
             "test-token",
+            analysis_service,
+            "English",
         )
         handler_type.log_message = lambda *_args: None
         server = ThreadingHTTPServer(
@@ -134,6 +224,7 @@ class ReviewProjectTests(unittest.TestCase):
             with urllib.request.urlopen(project_request) as response:
                 payload = json.load(response)
                 self.assertEqual(payload["project"]["id"], "project")
+                self.assertTrue(payload["analysis"]["available"])
 
             media_request = urllib.request.Request(
                 f"{base_url}/media/media?token=test-token", headers={"Range": "bytes=2-5"}
@@ -166,6 +257,62 @@ class ReviewProjectTests(unittest.TestCase):
                     "start_char": 0,
                     "end_char": 4,
                 })
+
+            analysis_body = json.dumps(
+                {"utterance_id": "utterance", "refresh": True}
+            ).encode()
+            analysis_request = urllib.request.Request(
+                f"{base_url}/api/analyze",
+                data=analysis_body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": base_url,
+                    "X-Flashcards-Token": "test-token",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(analysis_request) as response:
+                analysis = json.load(response)["analysis"]
+                self.assertEqual(analysis["candidates"][0]["surface"], "fish")
+
+            analyzed_card_body = json.dumps(
+                {
+                    "utterance_id": "utterance",
+                    "token_start": 0,
+                    "token_end": 1,
+                    "kind": "word",
+                    "tags": [],
+                    "analysis_ref": {
+                        "model": analysis["model"],
+                        "model_digest": analysis["model_digest"],
+                        "prompt_version": analysis["prompt_version"],
+                    },
+                }
+            ).encode()
+            analyzed_card_request = urllib.request.Request(
+                f"{base_url}/api/cards",
+                data=analyzed_card_body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": base_url,
+                    "X-Flashcards-Token": "test-token",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(analyzed_card_request) as response:
+                saved_project = json.load(response)["project"]
+                self.assertEqual(saved_project["learning_units"][0]["components"][0], {
+                    "text": "fish",
+                    "gloss": "fish",
+                    "span": None,
+                })
+            self.assertEqual(
+                analysis_service.calls,
+                [
+                    ("utterance", "en", "English", True),
+                    ("utterance", "en", "English", False),
+                ],
+            )
 
             bad_origin_request = urllib.request.Request(
                 f"{base_url}/api/cards",

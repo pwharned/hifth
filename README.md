@@ -28,6 +28,9 @@ The first working input path uses source-language SRT or WebVTT subtitles:
 
 ```bash
 python -m pip install -e ".[anki]"
+# Optional explicit model install; the application never downloads models.
+# Structured Qwen suggestions require Ollama >= 0.32.0.
+ollama pull qwen3.5:9b
 
 flashcards-import-subtitles movie.mp4 movie.vi.srt \
   --language vi \
@@ -36,11 +39,14 @@ flashcards-import-subtitles movie.mp4 movie.vi.srt \
 flashcards-review projects/movie.json
 ```
 
-The reviewer keeps selections as exact character and token spans, so repeated
-words are clozed correctly and several Vietnamese syllables can be retained as
-one learning unit. Clicking **Export Anki deck** trims each subtitle utterance
-from the original media and produces `projects/movie.apkg`. See
-`src/flashcards/README.md` for the schema and command-line workflow.
+The reviewer uses the local multilingual model to suggest contextual words,
+compounds, fixed expressions, and collocations. It keeps all suggestions and
+confirmed selections as exact character and token spans, so repeated words are
+clozed correctly and several Vietnamese syllables can be retained as one
+learning unit. Clicking **Export Anki deck** trims each subtitle utterance from
+the original media and produces `projects/movie.apkg`. See
+`src/flashcards/README.md` for model controls, the schema, and the complete
+command-line workflow.
 
 ## Project structure
 
