@@ -3,13 +3,14 @@
 Generates one Anki flashcard per Quarter-Hizb (QH), each embedding a live
 JS cloze-slider over the app's masking algorithm (`MaskEngine`, seeded by
 QH id, additive across levels 0/10/25/50/75/90/95). Unlike native Anki
-cloze, the *whole card* is the memorization target — the slider only
-controls how much of the QH's text is blanked while reading; the Back
-reveals the full unmasked text plus the trimmed audio for that QH.
+cloze, the *whole card* is the memorization target: the full QH plus one ayah
+immediately before and after it when available. The slider controls how much
+of that text is blanked while reading, and the card includes audio for the
+same expanded range.
 
 Only Surahs with a verified aligned JSON (`data/output/verified/*.json`)
-are included; QH spans needing un-verified Surahs are skipped and
-reported in the summary.
+are included; QH spans or their adjacent context needing un-verified Surahs
+are skipped and reported in the summary.
 
 ## Run
 
@@ -20,6 +21,9 @@ python scripts/generate_anki_cards.py --no-audio   # skip ffmpeg trimming, small
 ```
 
 Output: `data/output/anki/quran_quarter_hizb.apkg` (import directly into Anki).
+Re-importing a regenerated package with updates enabled replaces existing QH
+notes by stable GUID while preserving their review scheduling. After updating
+audio, **Tools > Check Media** can remove old clips that Anki no longer uses.
 
 ## Notes / caveats
 
@@ -27,10 +31,11 @@ Output: `data/output/anki/quran_quarter_hizb.apkg` (import directly into Anki).
   Desktop, AnkiDroid, AnkiMobile — all support inline `<script>` in
   templates). It is *not* native cloze deletion.
 - Masking is computed independently per Surah-segment within a QH (same
-  as the app), using a single seed = QH id.
+  as the app), using a single seed = QH id. Adjacent context participates in
+  masking.
 - Audio is trimmed per QH from `data/processed_audio/<surah>.wav` using
   first/last word timestamps (+250ms pad) and concatenated across Surah
-  boundaries when a QH spans two Surahs.
-- `quran_data.py` / `mask_engine.py` are intentionally standalone ports
-  of the Scala `QuranData`/`MaskEngine` (not a shared module) — update
-  both sides if the underlying tables/algorithm change.
+  boundaries.
+- `quran_data.py` / `mask_engine.py` are maintained independently from the
+  Scala `QuranData`/`MaskEngine`. The adjacent-ayah expansion is specific to
+  Anki generation and does not change the web player.

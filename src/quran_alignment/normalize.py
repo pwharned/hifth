@@ -9,7 +9,11 @@ Converts raw MP3 audio files to the format required by WhisperX:
 import logging
 import argparse
 from pathlib import Path
-from pydub import AudioSegment
+
+try:
+    from flashcards.media import normalize_audio as normalize_media_audio
+except ModuleNotFoundError:  # Supports the repository's existing `python -m src...` commands.
+    from src.flashcards.media import normalize_audio as normalize_media_audio
 # ── Constants ────────────────────────────────────────────────────────────────
 TARGET_SAMPLE_RATE = 16000
 TARGET_CHANNELS    = 1
@@ -38,23 +42,18 @@ def normalize_audio(input_path: Path, output_path: Path) -> Path:
         raise FileNotFoundError(f"Input file not found: {input_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     log.info(f"Loading   : {input_path.name}")
-    audio = AudioSegment.from_file(str(input_path))
-    log.info(
-        f"Source    : {audio.frame_rate}Hz | "
-        f"{audio.channels}ch | "
-        f"{audio.sample_width * 8}-bit | "
-        f"{len(audio) / 1000:.1f}s"
+    normalize_media_audio(
+        input_path,
+        output_path,
+        sample_rate=TARGET_SAMPLE_RATE,
+        channels=TARGET_CHANNELS,
+        sample_width_bytes=TARGET_SAMPLE_WIDTH,
     )
-    # Apply normalization steps
-    audio = audio.set_frame_rate(TARGET_SAMPLE_RATE)
-    audio = audio.set_channels(TARGET_CHANNELS)
-    audio = audio.set_sample_width(TARGET_SAMPLE_WIDTH)
-    audio.export(str(output_path), format="wav")
     log.info(f"Exported  : {output_path.name}")
     log.info(
-        f"Output    : {audio.frame_rate}Hz | "
-        f"{audio.channels}ch | "
-        f"{audio.sample_width * 8}-bit"
+        f"Output    : {TARGET_SAMPLE_RATE}Hz | "
+        f"{TARGET_CHANNELS}ch | "
+        f"{TARGET_SAMPLE_WIDTH * 8}-bit"
     )
     return output_path
 def normalize_surah(surah_number: int, raw_audio_dir: Path, processed_audio_dir: Path) -> Path:

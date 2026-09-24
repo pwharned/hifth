@@ -14,4 +14,4 @@ dependencies:
   - pip
   - pip:
       - whisperx
-      - pydub
+      - genanki>=0.13,<0.14

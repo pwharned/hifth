@@ -3,10 +3,10 @@
 generate_anki_cards.py
 -----------------------
 Generates an Anki deck (.apkg) with one interactive flashcard per
-Quarter-Hizb (QH). Each card embeds the app's visual cloze mechanism
-(a live, JS-driven slider over the whole QH's Arabic text) instead of
-native Anki cloze deletion -- the whole card is the memorization target,
-the slider only adjusts how much of it is masked while reading.
+Quarter-Hizb (QH). Each card includes the full QH plus one adjacent ayah
+before and after when available. It embeds the app's visual cloze mechanism
+(a live, JS-driven slider over the card's Arabic text) instead of native Anki
+cloze deletion; the slider adjusts how much is masked while reading.
 
 Reuses:
   - QuranData QH -> Surah/Ayah segment math          (quran_data.py)
@@ -26,19 +26,23 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import genanki
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 from anki_export import quran_data as qd
 from anki_export import mask_engine
 from anki_export.templates import CSS, FRONT_TEMPLATE, BACK_TEMPLATE
+from flashcards.media import (
+    MediaProcessingError,
+    concat_audio as concat_media_audio,
+    trim_audio as trim_media_audio,
+)
 
-REPO_ROOT = Path(__file__).parent.parent
 VERIFIED_DIR = REPO_ROOT / "data" / "output" / "verified"
 AUDIO_DIR = REPO_ROOT / "data" / "processed_audio"
 DEFAULT_OUT = REPO_ROOT / "data" / "output" / "anki" / "quran_quarter_hizb.apkg"
@@ -89,37 +93,29 @@ def trim_audio(surah_number: int, start_ms: float, end_ms: float, out_path: Path
     src = AUDIO_DIR / f"{surah_number:03d}.wav"
     if not src.exists():
         return False
-    start_s = max(0.0, (start_ms - AUDIO_PAD_MS) / 1000.0)
-    duration_s = (end_ms - start_ms + 2 * AUDIO_PAD_MS) / 1000.0
-    cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-ss", f"{start_s:.3f}",
-        "-i", str(src),
-        "-t", f"{duration_s:.3f}",
-        "-ac", "1", "-ar", "44100", "-b:a", "64k",
-        str(out_path),
-    ]
-    return subprocess.run(cmd).returncode == 0
+    try:
+        trim_media_audio(
+            src,
+            out_path,
+            start_ms,
+            end_ms,
+            padding_before_ms=AUDIO_PAD_MS,
+            padding_after_ms=AUDIO_PAD_MS,
+        )
+        return True
+    except (MediaProcessingError, ValueError):
+        return False
 
 
 def concat_audio(clip_paths: list[Path], out_path: Path) -> bool:
-    if len(clip_paths) == 1:
-        clip_paths[0].rename(out_path)
+    try:
+        concat_media_audio(clip_paths, out_path)
         return True
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        for p in clip_paths:
-            f.write(f"file '{p.resolve()}'\n")
-        list_file = f.name
-    cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-f", "concat", "-safe", "0", "-i", list_file,
-        "-c", "copy", str(out_path),
-    ]
-    ok = subprocess.run(cmd).returncode == 0
-    Path(list_file).unlink(missing_ok=True)
-    for p in clip_paths:
-        p.unlink(missing_ok=True)
-    return ok
+    except (MediaProcessingError, ValueError):
+        return False
+    finally:
+        for path in clip_paths:
+            path.unlink(missing_ok=True)
 
 
 def build_model() -> genanki.Model:
@@ -171,7 +167,7 @@ def main() -> None:
     generated, skipped = [], []
 
     for qh_id in range(args.qh_start, args.qh_end + 1):
-        segments = qd.segments_for_qh(qh_id)
+        segments = qd.segments_for_qh_with_context(qh_id)
         surahs_needed = {seg.surah_number for seg in segments}
         missing = [s for s in surahs_needed if get_surah_words(s) is None]
         if missing:
@@ -217,6 +213,8 @@ def main() -> None:
             else:
                 for p in clip_paths:
                     p.unlink(missing_ok=True)
+                skipped.append((qh_id, ["audio generation failed"]))
+                continue
 
         note = genanki.Note(
             model=model,

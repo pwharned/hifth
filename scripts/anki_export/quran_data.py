@@ -16,8 +16,8 @@ SURAH_AYAH_COUNTS = [
     54, 45, 83, 182, 88, 75, 85, 54, 53, 89, 59, 37, 35, 38, 29, 18, 45, 60, 49,
     62, 55, 78, 96, 29, 22, 24, 13, 14, 11, 11, 18, 12, 12, 30, 52, 52, 44, 28,
     28, 20, 56, 40, 31, 50, 40, 46, 42, 29, 19, 36, 25, 22, 17, 19, 26, 30, 20,
-    15, 21, 11, 8, 8, 19, 5, 8, 8, 11, 11, 8, 3, 9, 5, 4, 5, 5, 6, 5, 1, 13, 11,
-    4
+    15, 21, 11, 8, 8, 19, 5, 8, 8, 11, 11, 8, 3, 9, 5, 4, 7, 3, 6, 3, 5, 4, 5,
+    6
 ]
 
 SURAH_NAMES = [
@@ -109,6 +109,33 @@ def segments_for_qh(quarter_hizb_id: int) -> list[Segment]:
         cur_surah += 1
         cur_ayah = 1
     raw.append((cur_surah, cur_ayah, end_ayah))
+
+    return [
+        Segment(surah_number=s, start_ayah=a, end_ayah=e, seg_idx=i)
+        for i, (s, a, e) in enumerate(raw)
+    ]
+
+
+def segments_for_qh_with_context(quarter_hizb_id: int) -> list[Segment]:
+    """Return a QH plus one adjacent ayah on each available side."""
+    raw = [
+        (segment.surah_number, segment.start_ayah, segment.end_ayah)
+        for segment in segments_for_qh(quarter_hizb_id)
+    ]
+
+    first_surah, first_start, first_end = raw[0]
+    if first_start > 1:
+        raw[0] = (first_surah, first_start - 1, first_end)
+    elif first_surah > 1:
+        previous_end = SURAH_AYAH_COUNTS[first_surah - 2]
+        raw.insert(0, (first_surah - 1, previous_end, previous_end))
+
+    last_surah, last_start, last_end = raw[-1]
+    surah_end = SURAH_AYAH_COUNTS[last_surah - 1]
+    if last_end < surah_end:
+        raw[-1] = (last_surah, last_start, last_end + 1)
+    elif last_surah < len(SURAH_AYAH_COUNTS):
+        raw.append((last_surah + 1, 1, 1))
 
     return [
         Segment(surah_number=s, start_ayah=a, end_ayah=e, seg_idx=i)

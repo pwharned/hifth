@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hifth-flashcards"
+version = "0.1.0"
+description = "Local-first media alignment and flashcard generation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+anki = ["genanki>=0.13,<0.14"]
+
+[project.scripts]
+flashcards-import-subtitles = "flashcards.subtitles:main"
+flashcards-review = "flashcards.review:main"
+flashcards-export = "flashcards.export:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["flashcards*", "quran_alignment*"]
+
+[tool.setuptools.package-data]
+flashcards = ["reviewer_static/*"]

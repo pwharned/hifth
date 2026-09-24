@@ -17,11 +17,38 @@ data powers two independent outputs:
 Both consume the same `data/output/verified/<surah>_aligned.json` files;
 neither depends on the other.
 
+## General-purpose media flashcards
+
+The repository also contains a language-neutral Python library and local
+review application under `src/flashcards/`. It creates Clausula-shaped Anki
+cards from downloaded audio or video: original source audio on the front, an
+exact sentence cloze, and contextual target/sentence translations on the back.
+
+The first working input path uses source-language SRT or WebVTT subtitles:
+
+```bash
+python -m pip install -e ".[anki]"
+
+flashcards-import-subtitles movie.mp4 movie.vi.srt \
+  --language vi \
+  --out projects/movie.json
+
+flashcards-review projects/movie.json
+```
+
+The reviewer keeps selections as exact character and token spans, so repeated
+words are clozed correctly and several Vietnamese syllables can be retained as
+one learning unit. Clicking **Export Anki deck** trims each subtitle utterance
+from the original media and produces `projects/movie.apkg`. See
+`src/flashcards/README.md` for the schema and command-line workflow.
+
 ## Project structure
 
 ```
+src/flashcards/       - generic media/transcript/card library + local reviewer
 src/quran_alignment/ - Python alignment pipeline (normalize → align → validate)
 scripts/             - pipeline runner + Anki deck generator
+tests/               - generic library and end-to-end media-card tests
 data/
   raw_audio/         - source MP3s per Surah (001.mp3 ... 114.mp3)
   text/              - cached Uthmani text per Surah
@@ -48,6 +75,7 @@ millisecond timestamps, one JSON file per Surah.
 ```bash
 conda env create -f environment.yml
 conda activate quran
+python -m pip install -e .
 ```
 
 Requires `ffmpeg` on PATH (used both by the pipeline and the Anki audio
@@ -114,15 +142,17 @@ python scripts/generate_anki_cards.py --out my_deck.apkg --deck-name "Quran::My 
 
 Each card embeds an adjustable cloze slider (0/10/25/50/75/90/95%, same
 masking algorithm and seeding as the web app's player) over the full
-Quarter-Hizb text — the whole card is the memorization target, not a
-single hidden word as in native Anki cloze. The Back reveals the full
-text plus the trimmed/concatenated audio for that QH. See
-`scripts/anki_export/README.md` for implementation details and caveats.
+Quarter-Hizb plus the ayah immediately before and after it. At the beginning
+and end of the Quran, only the available adjacent ayah is included. All of
+this text participates in masking and the corresponding audio is included.
+See `scripts/anki_export/README.md` for implementation details and caveats.
 
 Re-running the generator after verifying more Surahs is safe and
 idempotent — note GUIDs are stable per QH id, so re-importing the
 updated deck into Anki updates existing cards rather than duplicating
-them.
+them and preserves their scheduling. Enable updating existing notes in the
+Anki import options. Changed audio may leave the previous clips unused;
+Anki's **Tools > Check Media** can remove them after import.
 
 ## Web app architecture
 

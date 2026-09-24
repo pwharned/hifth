@@ -1,6 +1,7 @@
 gitignore
 # Conda
 *.egg-info/
+build/
 __pycache__/
 *.pyc
 *.pyo
@@ -9,6 +10,7 @@ __pycache__/
 data/raw_audio/
 data/processed_audio/
 data/output/aligned/
+data/output/anki/
 # Only verified, final production JSON is tracked
 # data/output/verified/ is intentionally NOT ignored
 # OS
