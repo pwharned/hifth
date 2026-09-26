@@ -1,0 +1,122 @@
+:root {
+  color-scheme: dark;
+  --ink: #f3eee3;
+  --muted: #aaa397;
+  --paper: #111310;
+  --panel: #1b1d19;
+  --line: #393b33;
+  --saffron: #dfa33b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 82% 8%, rgb(223 163 59 / 8%), transparent 30rem),
+    linear-gradient(115deg, #151712, var(--paper) 58%);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.masthead {
+  width: min(1120px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: clamp(48px, 10vh, 110px) 0 32px;
+  border-bottom: 1px solid var(--line);
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  color: var(--saffron);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(48px, 10vw, 104px);
+  font-weight: 400;
+  letter-spacing: -0.045em;
+  line-height: 0.9;
+}
+
+.subtitle {
+  margin-top: 20px;
+  color: var(--muted);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(17px, 2vw, 22px);
+}
+
+#media-reviewer {
+  min-height: 100vh;
+}
+
+.loading-panel,
+noscript {
+  width: min(1120px, calc(100% - 40px));
+  margin: 0 auto;
+}
+
+.loading-panel {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: fit-content;
+  min-width: min(100%, 320px);
+  margin-top: 32px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+
+.loading-panel h2 {
+  margin-bottom: 4px;
+  font-size: 15px;
+}
+
+.loading-panel p,
+noscript {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.signal {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--saffron);
+  box-shadow: 0 0 18px rgb(223 163 59 / 70%);
+}
+
+noscript {
+  display: block;
+  margin-top: 18px;
+}
+
+@media (max-width: 560px) {
+  .masthead,
+  .loading-panel,
+  noscript {
+    width: min(100% - 28px, 1120px);
+  }
+
+  .masthead {
+    padding-top: 42px;
+  }
+
+  .loading-panel {
+    width: 100%;
+  }
+}

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Clausula Media Reviewer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main id="media-reviewer">
+    <header class="masthead">
+      <p class="eyebrow">Local language workshop</p>
+      <h1>Clausula</h1>
+      <p class="subtitle">Listen closely. Select exactly. Keep the sentence.</p>
+    </header>
+    <section class="loading-panel">
+      <span class="signal" aria-hidden="true"></span>
+      <div>
+        <h2>Media reviewer</h2>
+        <p>Waiting for the reviewer interface.</p>
+      </div>
+    </section>
+    <noscript>This reviewer requires its separately built frontend module.</noscript>
+  </main>
+  <script type="module">
+    import { init } from "/js/main.js";
+    init();
+  </script>
+</body>
+</html>

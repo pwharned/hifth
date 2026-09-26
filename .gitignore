@@ -11,6 +11,8 @@ data/raw_audio/
 data/processed_audio/
 data/output/aligned/
 data/output/anki/
+*.analysis-cache.json
+*.transcription-cache.json
 # Only verified, final production JSON is tracked
 # data/output/verified/ is intentionally NOT ignored
 # OS
@@ -22,9 +24,13 @@ Thumbs.db
 .metals/
 .bsp/
 .bloop/
+.scala-build/
 *.log
 target/
 static/js/
+extension/dist/js/
+/at_the_airport.json
+/at_the_arport.mp3
 output.log
 project/project/
 project/target/

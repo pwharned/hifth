@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pwharned/hifth/schema/media-artifact-v1.schema.json",
+  "title": "Hifth media transcript artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_type", "schema_version", "id", "title", "language", "media", "utterances"],
+  "properties": {
+    "artifact_type": {"const": "media"},
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "language": {"type": "string", "minLength": 1},
+    "media": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/mediaSource"}
+    },
+    "utterances": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/utterance"}
+    }
+  },
+  "$defs": {
+    "nullableString": {
+      "anyOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "null"}
+      ]
+    },
+    "nullableNumber": {
+      "anyOf": [
+        {"type": "number", "minimum": 0},
+        {"type": "null"}
+      ]
+    },
+    "nullableConfidence": {
+      "anyOf": [
+        {"type": "number", "minimum": 0, "maximum": 1},
+        {"type": "null"}
+      ]
+    },
+    "textSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_char", "end_char"],
+      "properties": {
+        "start_char": {"type": "integer", "minimum": 0},
+        "end_char": {"type": "integer", "minimum": 1}
+      }
+    },
+    "mediaSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "language"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "language": {"type": "string", "minLength": 1},
+        "title": {"$ref": "#/$defs/nullableString"},
+        "source_url": {"$ref": "#/$defs/nullableString"},
+        "checksum_sha256": {
+          "anyOf": [
+            {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+            {"type": "null"}
+          ]
+        },
+        "duration_ms": {
+          "anyOf": [
+            {"type": "number", "exclusiveMinimum": 0},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "baseToken": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "span"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "span": {"$ref": "#/$defs/textSpan"},
+        "start_ms": {"$ref": "#/$defs/nullableNumber"},
+        "end_ms": {"$ref": "#/$defs/nullableNumber"},
+        "confidence": {"$ref": "#/$defs/nullableConfidence"}
+      }
+    },
+    "utterance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "media_id", "text", "start_ms", "end_ms", "tokens", "provenance"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "media_id": {"type": "string", "minLength": 1},
+        "text": {"type": "string", "minLength": 1},
+        "start_ms": {"type": "number", "minimum": 0},
+        "end_ms": {"type": "number", "exclusiveMinimum": 0},
+        "tokens": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/baseToken"}
+        },
+        "translation": {"$ref": "#/$defs/nullableString"},
+        "confidence": {"$ref": "#/$defs/nullableConfidence"},
+        "provenance": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}

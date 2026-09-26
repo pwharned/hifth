@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import hashlib
-import html
 import json
 import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Self, TypeVar
+from typing import Any, Self
 
 
 CURRENT_SCHEMA_VERSION = 1
+MEDIA_ARTIFACT_TYPE = "media"
 
 
 def _require_string(value: object, name: str) -> str:
@@ -47,7 +45,7 @@ def _validate_interval(start: object, end: object, prefix: str) -> None:
         raise ValueError(f"{prefix}.end_ms must be greater than {prefix}.start_ms")
 
 
-def _validate_confidence(value: object, name: str = "confidence") -> None:
+def _validate_confidence(value: object, name: str) -> None:
     if value is None:
         return
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -56,13 +54,10 @@ def _validate_confidence(value: object, name: str = "confidence") -> None:
         raise ValueError(f"{name} must be between 0 and 1")
 
 
-T = TypeVar("T")
-
-
 def _as_tuple(value: object, name: str, *, none_as_empty: bool = False) -> tuple[Any, ...]:
     if value is None and none_as_empty:
         return ()
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise ValueError(f"{name} must be a sequence")
     return tuple(value)
 
@@ -115,7 +110,9 @@ class MediaSource:
             if not isinstance(self.checksum_sha256, str) or not re.fullmatch(
                 r"[0-9a-fA-F]{64}", self.checksum_sha256
             ):
-                raise ValueError("MediaSource.checksum_sha256 must contain 64 hexadecimal characters")
+                raise ValueError(
+                    "MediaSource.checksum_sha256 must contain 64 hexadecimal characters"
+                )
         if self.duration_ms is not None:
             _require_number(self.duration_ms, "MediaSource.duration_ms")
             if self.duration_ms == 0:
@@ -211,71 +208,6 @@ class Utterance:
         )
 
 
-class LearningUnitKind(str, Enum):
-    UNKNOWN = "unknown"
-    WORD = "word"
-    COMPOUND = "compound"
-    FIXED_EXPRESSION = "fixed_expression"
-    COLLOCATION = "collocation"
-    NAMED_ENTITY = "named_entity"
-    FREE_PHRASE = "free_phrase"
-
-
-@dataclass(frozen=True, slots=True)
-class LearningComponent:
-    text: str
-    gloss: str | None = None
-    span: TextSpan | None = None
-
-    def __post_init__(self) -> None:
-        _require_string(self.text, "LearningComponent.text")
-        _optional_string(self.gloss, "LearningComponent.gloss")
-        if self.span is not None and not isinstance(self.span, TextSpan):
-            raise ValueError("LearningComponent.span must be a TextSpan")
-
-
-@dataclass(frozen=True, slots=True)
-class LearningUnit:
-    id: str
-    utterance_id: str
-    span: TextSpan
-    kind: LearningUnitKind
-    token_start: int | None = None
-    token_end: int | None = None
-    contextual_gloss: str | None = None
-    components: tuple[LearningComponent, ...] = ()
-    confidence: float | None = None
-    evidence: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        _require_string(self.id, "LearningUnit.id")
-        _require_string(self.utterance_id, "LearningUnit.utterance_id")
-        if not isinstance(self.span, TextSpan):
-            raise ValueError("LearningUnit.span must be a TextSpan")
-        try:
-            kind = LearningUnitKind(self.kind)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"unsupported learning unit kind: {self.kind!r}") from exc
-        object.__setattr__(self, "kind", kind)
-
-        if (self.token_start is None) != (self.token_end is None):
-            raise ValueError("LearningUnit.token_start and token_end must be provided together")
-        if self.token_start is not None:
-            _require_int(self.token_start, "LearningUnit.token_start")
-            _require_int(self.token_end, "LearningUnit.token_end")
-            if self.token_end <= self.token_start:
-                raise ValueError("LearningUnit.token_end must be greater than token_start")
-
-        _optional_string(self.contextual_gloss, "LearningUnit.contextual_gloss")
-        _validate_confidence(self.confidence, "LearningUnit.confidence")
-        components = _as_tuple(self.components, "LearningUnit.components", none_as_empty=True)
-        for index, component in enumerate(components):
-            if not isinstance(component, LearningComponent):
-                raise ValueError(f"LearningUnit.components[{index}] must be a LearningComponent")
-        object.__setattr__(self, "components", components)
-        object.__setattr__(self, "evidence", _string_tuple(self.evidence, "LearningUnit.evidence"))
-
-
 @dataclass(frozen=True, slots=True)
 class AudioSpan:
     media_id: str
@@ -291,236 +223,70 @@ class AudioSpan:
         _require_number(self.padding_after_ms, "AudioSpan.padding_after_ms")
 
 
-class ClozePolicy(str, Enum):
-    EXPLICIT_SPAN = "explicit_span"
-    PROGRESSIVE_MASK = "progressive_mask"
-
-
 @dataclass(frozen=True, slots=True)
-class CardDraft:
-    id: str
-    media_id: str
-    utterance_id: str
-    language: str
-    text: str
-    policy: ClozePolicy
-    target_span: TextSpan | None = None
-    target_gloss: str | None = None
-    sentence_translation: str | None = None
-    analysis: str | None = None
-    source_title: str | None = None
-    source_url: str | None = None
-    audio_span: AudioSpan | None = None
-    tags: tuple[str, ...] = ()
-    provenance: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        _require_string(self.id, "CardDraft.id")
-        _require_string(self.media_id, "CardDraft.media_id")
-        _require_string(self.utterance_id, "CardDraft.utterance_id")
-        _require_string(self.language, "CardDraft.language")
-        _require_string(self.text, "CardDraft.text")
-        try:
-            policy = ClozePolicy(self.policy)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"unsupported cloze policy: {self.policy!r}") from exc
-        object.__setattr__(self, "policy", policy)
-
-        if self.target_span is not None:
-            if not isinstance(self.target_span, TextSpan):
-                raise ValueError("CardDraft.target_span must be a TextSpan")
-            self.target_span.extract(self.text)
-        if policy is ClozePolicy.EXPLICIT_SPAN and self.target_span is None:
-            raise ValueError("explicit_span cards require target_span")
-
-        _optional_string(self.target_gloss, "CardDraft.target_gloss")
-        _optional_string(self.sentence_translation, "CardDraft.sentence_translation")
-        _optional_string(self.analysis, "CardDraft.analysis")
-        _optional_string(self.source_title, "CardDraft.source_title")
-        _optional_string(self.source_url, "CardDraft.source_url")
-        if self.audio_span is not None:
-            if not isinstance(self.audio_span, AudioSpan):
-                raise ValueError("CardDraft.audio_span must be an AudioSpan")
-            if self.audio_span.media_id != self.media_id:
-                raise ValueError("CardDraft.audio_span must reference CardDraft.media_id")
-        object.__setattr__(self, "tags", _string_tuple(self.tags, "CardDraft.tags"))
-        object.__setattr__(
-            self, "provenance", _string_tuple(self.provenance, "CardDraft.provenance")
-        )
-
-    def target_text(self) -> str:
-        if self.target_span is None:
-            return self.text
-        return self.target_span.extract(self.text)
-
-    def cloze_text(
-        self,
-        cloze_number: int = 1,
-        hint: str | None = None,
-        escape_html: bool = False,
-    ) -> str:
-        if self.policy is ClozePolicy.PROGRESSIVE_MASK:
-            return html.escape(self.text) if escape_html else self.text
-        from .cloze import build_cloze
-
-        return build_cloze(
-            self.text,
-            self.target_span,
-            cloze_number=cloze_number,
-            hint=hint,
-            escape_html=escape_html,
-        )
-
-
-def stable_card_id(
-    media_id: str,
-    utterance_id: str,
-    target_span: TextSpan | None,
-    policy: ClozePolicy,
-) -> str:
-    _require_string(media_id, "media_id")
-    _require_string(utterance_id, "utterance_id")
-    if target_span is not None and not isinstance(target_span, TextSpan):
-        raise ValueError("target_span must be a TextSpan or None")
-    try:
-        policy_value = ClozePolicy(policy).value
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"unsupported cloze policy: {policy!r}") from exc
-    identity = {
-        "media_id": media_id,
-        "policy": policy_value,
-        "target_span": None
-        if target_span is None
-        else [target_span.start_char, target_span.end_char],
-        "utterance_id": utterance_id,
-    }
-    canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True, slots=True)
-class ProjectManifest:
+class MediaArtifact:
     id: str
     title: str
     language: str
     media: tuple[MediaSource, ...]
     utterances: tuple[Utterance, ...]
-    learning_units: tuple[LearningUnit, ...]
-    cards: tuple[CardDraft, ...]
     schema_version: int = CURRENT_SCHEMA_VERSION
+    artifact_type: str = MEDIA_ARTIFACT_TYPE
 
     def __post_init__(self) -> None:
+        if self.artifact_type != MEDIA_ARTIFACT_TYPE:
+            raise ValueError(
+                f"unsupported artifact type {self.artifact_type!r}; "
+                f"expected {MEDIA_ARTIFACT_TYPE!r}"
+            )
         if self.schema_version != CURRENT_SCHEMA_VERSION or type(self.schema_version) is not int:
             raise ValueError(
                 f"unsupported schema version {self.schema_version!r}; "
                 f"expected {CURRENT_SCHEMA_VERSION}"
             )
-        _require_string(self.id, "ProjectManifest.id")
-        _require_string(self.title, "ProjectManifest.title")
-        _require_string(self.language, "ProjectManifest.language")
+        _require_string(self.id, "MediaArtifact.id")
+        _require_string(self.title, "MediaArtifact.title")
+        _require_string(self.language, "MediaArtifact.language")
 
-        media = _as_tuple(self.media, "ProjectManifest.media")
-        utterances = _as_tuple(self.utterances, "ProjectManifest.utterances")
-        learning_units = _as_tuple(self.learning_units, "ProjectManifest.learning_units")
-        cards = _as_tuple(self.cards, "ProjectManifest.cards")
+        media = _as_tuple(self.media, "MediaArtifact.media")
+        utterances = _as_tuple(self.utterances, "MediaArtifact.utterances")
+        if not media:
+            raise ValueError("MediaArtifact.media must contain at least one source")
         object.__setattr__(self, "media", media)
         object.__setattr__(self, "utterances", utterances)
-        object.__setattr__(self, "learning_units", learning_units)
-        object.__setattr__(self, "cards", cards)
 
-        self._validate_item_types(media, MediaSource, "media")
-        self._validate_item_types(utterances, Utterance, "utterances")
-        self._validate_item_types(learning_units, LearningUnit, "learning_units")
-        self._validate_item_types(cards, CardDraft, "cards")
+        for index, source in enumerate(media):
+            if not isinstance(source, MediaSource):
+                raise ValueError(f"MediaArtifact.media[{index}] must be a MediaSource")
+        for index, utterance in enumerate(utterances):
+            if not isinstance(utterance, Utterance):
+                raise ValueError(f"MediaArtifact.utterances[{index}] must be an Utterance")
 
-        media_by_id = self._index_by_id(media, "media")
-        utterance_by_id = self._index_by_id(utterances, "utterance")
-        self._index_by_id(learning_units, "learning unit")
-        self._index_by_id(cards, "card")
+        media_by_id: dict[str, MediaSource] = {}
+        for source in media:
+            if source.id in media_by_id:
+                raise ValueError(f"duplicate media id: {source.id!r}")
+            media_by_id[source.id] = source
+
+        utterance_ids: set[str] = set()
+        for utterance in utterances:
+            if utterance.id in utterance_ids:
+                raise ValueError(f"duplicate utterance id: {utterance.id!r}")
+            utterance_ids.add(utterance.id)
 
         for utterance in utterances:
             source = media_by_id.get(utterance.media_id)
             if source is None:
                 raise ValueError(
-                    f"utterance {utterance.id!r} references unknown media {utterance.media_id!r}"
+                    f"utterance {utterance.id!r} references unknown media "
+                    f"{utterance.media_id!r}"
                 )
             if source.duration_ms is not None and utterance.end_ms > source.duration_ms:
                 raise ValueError(f"utterance {utterance.id!r} exceeds its media duration")
 
-        for unit in learning_units:
-            utterance = utterance_by_id.get(unit.utterance_id)
-            if utterance is None:
-                raise ValueError(
-                    f"learning unit {unit.id!r} references unknown utterance "
-                    f"{unit.utterance_id!r}"
-                )
-            unit.span.extract(utterance.text)
-            if unit.token_start is not None:
-                token_span = utterance.span_for_tokens(unit.token_start, unit.token_end)
-                if token_span != unit.span:
-                    raise ValueError(
-                        f"learning unit {unit.id!r} span does not match its token range"
-                    )
-            for component in unit.components:
-                if component.span is None:
-                    continue
-                if not (
-                    unit.span.start_char <= component.span.start_char
-                    and component.span.end_char <= unit.span.end_char
-                ):
-                    raise ValueError(
-                        f"component span in learning unit {unit.id!r} falls outside the unit span"
-                    )
-                if component.span.extract(utterance.text) != component.text:
-                    raise ValueError(
-                        f"component text in learning unit {unit.id!r} does not match its span"
-                    )
-
-        for card in cards:
-            source = media_by_id.get(card.media_id)
-            if source is None:
-                raise ValueError(f"card {card.id!r} references unknown media {card.media_id!r}")
-            utterance = utterance_by_id.get(card.utterance_id)
-            if utterance is None:
-                raise ValueError(
-                    f"card {card.id!r} references unknown utterance {card.utterance_id!r}"
-                )
-            if utterance.media_id != card.media_id:
-                raise ValueError(f"card {card.id!r} media does not match its utterance")
-            if card.text != utterance.text:
-                raise ValueError(f"card {card.id!r} text does not match its utterance")
-            if card.audio_span is not None:
-                if card.audio_span.media_id not in media_by_id:
-                    raise ValueError(
-                        f"card {card.id!r} audio references unknown media "
-                        f"{card.audio_span.media_id!r}"
-                    )
-                if (
-                    source.duration_ms is not None
-                    and card.audio_span.end_ms > source.duration_ms
-                ):
-                    raise ValueError(f"card {card.id!r} audio exceeds its media duration")
-
-    @staticmethod
-    def _validate_item_types(items: tuple[Any, ...], item_type: type[T], name: str) -> None:
-        for index, item in enumerate(items):
-            if not isinstance(item, item_type):
-                raise ValueError(
-                    f"ProjectManifest.{name}[{index}] must be a {item_type.__name__}"
-                )
-
-    @staticmethod
-    def _index_by_id(items: tuple[T, ...], name: str) -> dict[str, T]:
-        indexed: dict[str, T] = {}
-        for item in items:
-            item_id = getattr(item, "id")
-            if item_id in indexed:
-                raise ValueError(f"duplicate {name} id: {item_id!r}")
-            indexed[item_id] = item
-        return indexed
-
     def to_dict(self) -> dict[str, Any]:
         return {
+            "artifact_type": self.artifact_type,
             "schema_version": self.schema_version,
             "id": self.id,
             "title": self.title,
@@ -560,66 +326,13 @@ class ProjectManifest:
                 }
                 for utterance in self.utterances
             ],
-            "learning_units": [
-                {
-                    "id": unit.id,
-                    "utterance_id": unit.utterance_id,
-                    "span": _span_to_dict(unit.span),
-                    "kind": unit.kind.value,
-                    "token_start": unit.token_start,
-                    "token_end": unit.token_end,
-                    "contextual_gloss": unit.contextual_gloss,
-                    "components": [
-                        {
-                            "text": component.text,
-                            "gloss": component.gloss,
-                            "span": None
-                            if component.span is None
-                            else _span_to_dict(component.span),
-                        }
-                        for component in unit.components
-                    ],
-                    "confidence": unit.confidence,
-                    "evidence": list(unit.evidence),
-                }
-                for unit in self.learning_units
-            ],
-            "cards": [
-                {
-                    "id": card.id,
-                    "media_id": card.media_id,
-                    "utterance_id": card.utterance_id,
-                    "language": card.language,
-                    "text": card.text,
-                    "policy": card.policy.value,
-                    "target_span": None
-                    if card.target_span is None
-                    else _span_to_dict(card.target_span),
-                    "target_gloss": card.target_gloss,
-                    "sentence_translation": card.sentence_translation,
-                    "analysis": card.analysis,
-                    "source_title": card.source_title,
-                    "source_url": card.source_url,
-                    "audio_span": None
-                    if card.audio_span is None
-                    else {
-                        "media_id": card.audio_span.media_id,
-                        "start_ms": card.audio_span.start_ms,
-                        "end_ms": card.audio_span.end_ms,
-                        "padding_before_ms": card.audio_span.padding_before_ms,
-                        "padding_after_ms": card.audio_span.padding_after_ms,
-                    },
-                    "tags": list(card.tags),
-                    "provenance": list(card.provenance),
-                }
-                for card in self.cards
-            ],
         }
 
     def to_json(self, *, indent: int | None = None) -> str:
         separators = (",", ":") if indent is None else None
         return json.dumps(
             self.to_dict(),
+            allow_nan=False,
             ensure_ascii=False,
             indent=indent,
             separators=separators,
@@ -628,48 +341,53 @@ class ProjectManifest:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
-        root = _require_mapping(data, "manifest")
-        version = root.get("schema_version")
+        root = _require_mapping(data, "media artifact")
+        root_keys = {
+            "artifact_type",
+            "schema_version",
+            "id",
+            "title",
+            "language",
+            "media",
+            "utterances",
+        }
+        _require_keys(
+            root,
+            root_keys,
+            root_keys,
+            "media artifact",
+        )
+        artifact_type = root["artifact_type"]
+        if artifact_type != MEDIA_ARTIFACT_TYPE:
+            raise ValueError(
+                f"unsupported artifact type {artifact_type!r}; expected {MEDIA_ARTIFACT_TYPE!r}"
+            )
+        version = root["schema_version"]
         if version != CURRENT_SCHEMA_VERSION or type(version) is not int:
             raise ValueError(
                 f"unsupported schema version {version!r}; expected {CURRENT_SCHEMA_VERSION}"
             )
-
-        media = tuple(_media_from_dict(item) for item in _require_sequence(root, "media"))
-        utterances = tuple(
-            _utterance_from_dict(item) for item in _require_sequence(root, "utterances")
-        )
-        learning_units = tuple(
-            _learning_unit_from_dict(item)
-            for item in _require_sequence(root, "learning_units")
-        )
-        cards = tuple(_card_from_dict(item) for item in _require_sequence(root, "cards"))
+        media_values = _require_sequence(root["media"], "media artifact.media")
+        utterance_values = _require_sequence(root["utterances"], "media artifact.utterances")
         return cls(
-            id=_required(root, "id", "manifest"),
-            title=_required(root, "title", "manifest"),
-            language=_required(root, "language", "manifest"),
-            media=media,
-            utterances=utterances,
-            learning_units=learning_units,
-            cards=cards,
+            id=root["id"],
+            title=root["title"],
+            language=root["language"],
+            media=tuple(_media_from_dict(item) for item in media_values),
+            utterances=tuple(_utterance_from_dict(item) for item in utterance_values),
             schema_version=version,
+            artifact_type=artifact_type,
         )
 
     @classmethod
     def from_json(cls, payload: str) -> Self:
         if not isinstance(payload, str):
-            raise ValueError("manifest JSON payload must be a string")
+            raise ValueError("media artifact JSON payload must be a string")
         return cls.from_dict(json.loads(payload))
 
 
 def _span_to_dict(span: TextSpan) -> dict[str, int]:
     return {"start_char": span.start_char, "end_char": span.end_char}
-
-
-def _required(data: Mapping[str, Any], key: str, context: str) -> Any:
-    if key not in data:
-        raise ValueError(f"missing {context}.{key}")
-    return data[key]
 
 
 def _require_mapping(value: object, context: str) -> Mapping[str, Any]:
@@ -678,27 +396,56 @@ def _require_mapping(value: object, context: str) -> Mapping[str, Any]:
     return value
 
 
-def _require_sequence(data: Mapping[str, Any], key: str) -> Sequence[Any]:
-    value = _required(data, key, "manifest")
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-        raise ValueError(f"manifest.{key} must be an array")
+def _require_sequence(value: object, context: str) -> Sequence[Any]:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise ValueError(f"{context} must be an array")
     return value
+
+
+def _require_keys(
+    data: Mapping[str, Any], allowed: set[str], required: set[str], context: str
+) -> None:
+    keys = set(data)
+    unsupported = keys - allowed
+    if unsupported:
+        names = ", ".join(sorted(str(name) for name in unsupported))
+        raise ValueError(f"{context} contains unsupported field(s): {names}")
+    missing = required - keys
+    if missing:
+        raise ValueError(f"missing {context}.{min(missing)}")
 
 
 def _parse_span(value: object, context: str) -> TextSpan:
     data = _require_mapping(value, context)
-    return TextSpan(
-        start_char=_required(data, "start_char", context),
-        end_char=_required(data, "end_char", context),
+    _require_keys(
+        data,
+        {"start_char", "end_char"},
+        {"start_char", "end_char"},
+        context,
     )
+    return TextSpan(start_char=data["start_char"], end_char=data["end_char"])
 
 
 def _media_from_dict(value: object) -> MediaSource:
     data = _require_mapping(value, "media item")
+    _require_keys(
+        data,
+        {
+            "id",
+            "path",
+            "language",
+            "title",
+            "source_url",
+            "checksum_sha256",
+            "duration_ms",
+        },
+        {"id", "path", "language"},
+        "media item",
+    )
     return MediaSource(
-        id=_required(data, "id", "media item"),
-        path=_required(data, "path", "media item"),
-        language=_required(data, "language", "media item"),
+        id=data["id"],
+        path=data["path"],
+        language=data["language"],
         title=data.get("title"),
         source_url=data.get("source_url"),
         checksum_sha256=data.get("checksum_sha256"),
@@ -708,9 +455,15 @@ def _media_from_dict(value: object) -> MediaSource:
 
 def _token_from_dict(value: object) -> BaseToken:
     data = _require_mapping(value, "token")
+    _require_keys(
+        data,
+        {"text", "span", "start_ms", "end_ms", "confidence"},
+        {"text", "span"},
+        "token",
+    )
     return BaseToken(
-        text=_required(data, "text", "token"),
-        span=_parse_span(_required(data, "span", "token"), "token.span"),
+        text=data["text"],
+        span=_parse_span(data["span"], "token.span"),
         start_ms=data.get("start_ms"),
         end_ms=data.get("end_ms"),
         confidence=data.get("confidence"),
@@ -719,82 +472,32 @@ def _token_from_dict(value: object) -> BaseToken:
 
 def _utterance_from_dict(value: object) -> Utterance:
     data = _require_mapping(value, "utterance")
-    tokens_value = _required(data, "tokens", "utterance")
-    if isinstance(tokens_value, (str, bytes)) or not isinstance(tokens_value, Sequence):
-        raise ValueError("utterance.tokens must be an array")
+    _require_keys(
+        data,
+        {
+            "id",
+            "media_id",
+            "text",
+            "start_ms",
+            "end_ms",
+            "tokens",
+            "translation",
+            "confidence",
+            "provenance",
+        },
+        {"id", "media_id", "text", "start_ms", "end_ms", "tokens", "provenance"},
+        "utterance",
+    )
+    token_values = _require_sequence(data["tokens"], "utterance.tokens")
+    provenance = _require_sequence(data["provenance"], "utterance.provenance")
     return Utterance(
-        id=_required(data, "id", "utterance"),
-        media_id=_required(data, "media_id", "utterance"),
-        text=_required(data, "text", "utterance"),
-        start_ms=_required(data, "start_ms", "utterance"),
-        end_ms=_required(data, "end_ms", "utterance"),
-        tokens=tuple(_token_from_dict(item) for item in tokens_value),
+        id=data["id"],
+        media_id=data["media_id"],
+        text=data["text"],
+        start_ms=data["start_ms"],
+        end_ms=data["end_ms"],
+        tokens=tuple(_token_from_dict(item) for item in token_values),
         translation=data.get("translation"),
         confidence=data.get("confidence"),
-        provenance=data.get("provenance", ()),
-    )
-
-
-def _component_from_dict(value: object) -> LearningComponent:
-    data = _require_mapping(value, "learning component")
-    span_value = data.get("span")
-    return LearningComponent(
-        text=_required(data, "text", "learning component"),
-        gloss=data.get("gloss"),
-        span=None if span_value is None else _parse_span(span_value, "learning component.span"),
-    )
-
-
-def _learning_unit_from_dict(value: object) -> LearningUnit:
-    data = _require_mapping(value, "learning unit")
-    components_value = data.get("components", ())
-    if components_value is None:
-        components_value = ()
-    if isinstance(components_value, (str, bytes)) or not isinstance(components_value, Sequence):
-        raise ValueError("learning unit.components must be an array")
-    return LearningUnit(
-        id=_required(data, "id", "learning unit"),
-        utterance_id=_required(data, "utterance_id", "learning unit"),
-        span=_parse_span(_required(data, "span", "learning unit"), "learning unit.span"),
-        kind=_required(data, "kind", "learning unit"),
-        token_start=data.get("token_start"),
-        token_end=data.get("token_end"),
-        contextual_gloss=data.get("contextual_gloss"),
-        components=tuple(_component_from_dict(item) for item in components_value),
-        confidence=data.get("confidence"),
-        evidence=data.get("evidence", ()),
-    )
-
-
-def _audio_span_from_dict(value: object) -> AudioSpan:
-    data = _require_mapping(value, "audio span")
-    return AudioSpan(
-        media_id=_required(data, "media_id", "audio span"),
-        start_ms=_required(data, "start_ms", "audio span"),
-        end_ms=_required(data, "end_ms", "audio span"),
-        padding_before_ms=data.get("padding_before_ms", 250),
-        padding_after_ms=data.get("padding_after_ms", 250),
-    )
-
-
-def _card_from_dict(value: object) -> CardDraft:
-    data = _require_mapping(value, "card")
-    span_value = data.get("target_span")
-    audio_value = data.get("audio_span")
-    return CardDraft(
-        id=_required(data, "id", "card"),
-        media_id=_required(data, "media_id", "card"),
-        utterance_id=_required(data, "utterance_id", "card"),
-        language=_required(data, "language", "card"),
-        text=_required(data, "text", "card"),
-        policy=_required(data, "policy", "card"),
-        target_span=None if span_value is None else _parse_span(span_value, "card.target_span"),
-        target_gloss=data.get("target_gloss"),
-        sentence_translation=data.get("sentence_translation"),
-        analysis=data.get("analysis"),
-        source_title=data.get("source_title"),
-        source_url=data.get("source_url"),
-        audio_span=None if audio_value is None else _audio_span_from_dict(audio_value),
-        tags=data.get("tags", ()),
-        provenance=data.get("provenance", ()),
+        provenance=tuple(provenance),
     )

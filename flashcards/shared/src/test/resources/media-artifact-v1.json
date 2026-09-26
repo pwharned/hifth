@@ -1,0 +1,37 @@
+{
+  "artifact_type": "media",
+  "schema_version": 1,
+  "id": "artifact-contract-test",
+  "title": "Vietnamese contract fixture",
+  "language": "vi",
+  "media": [
+    {
+      "id": "media-contract-test",
+      "path": "lesson.mp3",
+      "language": "vi",
+      "title": "Lesson",
+      "source_url": null,
+      "checksum_sha256": null,
+      "duration_ms": 2000.5
+    }
+  ],
+  "utterances": [
+    {
+      "id": "utterance-contract-test",
+      "media_id": "media-contract-test",
+      "text": "Tôi là học sinh.",
+      "start_ms": 100.25,
+      "end_ms": 1500.75,
+      "tokens": [
+        {"text": "Tôi", "span": {"start_char": 0, "end_char": 3}, "start_ms": 100.25, "end_ms": 300.0, "confidence": 0.99},
+        {"text": "là", "span": {"start_char": 4, "end_char": 6}, "start_ms": 320.0, "end_ms": 500.0, "confidence": 0.98},
+        {"text": "học", "span": {"start_char": 7, "end_char": 10}, "start_ms": 520.0, "end_ms": 800.0, "confidence": 0.97},
+        {"text": "sinh", "span": {"start_char": 11, "end_char": 15}, "start_ms": 810.0, "end_ms": 1100.0, "confidence": 0.96},
+        {"text": ".", "span": {"start_char": 15, "end_char": 16}, "start_ms": null, "end_ms": null, "confidence": null}
+      ],
+      "translation": null,
+      "confidence": 0.975,
+      "provenance": ["fixture"]
+    }
+  ]
+}

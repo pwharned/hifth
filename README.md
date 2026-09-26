@@ -19,42 +19,55 @@ neither depends on the other.
 
 ## General-purpose media flashcards
 
-The repository also contains a language-neutral Python library and local
-review application under `src/flashcards/`. It creates Clausula-shaped Anki
-cards from downloaded audio or video: original source audio on the front, an
-exact sentence cloze, and contextual target/sentence translations on the back.
+The repository also contains a stateless language-learning card bridge. Python
+extracts an immutable timed transcript artifact from downloaded audio or video;
+a Scala JVM/Scala.js reviewer consumes that artifact, translates exact text
+selections and sentences with Google, prepares whole-sentence Google TTS, and
+sends Clausula-shaped notes directly to AnkiConnect. Anki remains the only card
+and review store.
 
-The first working input path uses source-language SRT or WebVTT subtitles:
+Media can use external subtitles, an embedded source-language text track, or
+local speech recognition when neither is available:
 
 ```bash
-python -m pip install -e ".[anki]"
-# Optional explicit model install; the application never downloads models.
-# Structured Qwen suggestions require Ollama >= 0.32.0.
-ollama pull qwen3.5:9b
+python -m pip install -e ".[asr]"
 
-flashcards-import-subtitles movie.mp4 movie.vi.srt \
-  --language vi \
-  --out projects/movie.json
+# Explicit one-time ASR model download. Imports never download model weights.
+flashcards-prepare-asr --model medium
 
-flashcards-review projects/movie.json
+# External subtitles
+flashcards-import-media movie.mp4 --subtitles movie.vi.srt \
+  --language vi --out projects/movie.json
+
+# Embedded Vietnamese subtitles when available, otherwise local ASR
+flashcards-import-media movie.mkv \
+  --language vi --asr-model medium --out projects/movie.json
+
+# Audio-only input follows the same ASR fallback
+flashcards-import-media podcast.mp3 \
+  --language vi --asr-model medium --out projects/podcast.json
+
+sbt "mediaReviewerBackend/run projects/movie.json"
 ```
 
-The reviewer uses the local multilingual model to suggest contextual words,
-compounds, fixed expressions, and collocations. It keeps all suggestions and
-confirmed selections as exact character and token spans, so repeated words are
-clozed correctly and several Vietnamese syllables can be retained as one
-learning unit. Clicking **Export Anki deck** trims each subtitle utterance from
-the original media and produces `projects/movie.apkg`. See
-`src/flashcards/README.md` for model controls, the schema, and the complete
-command-line workflow.
+Selecting text in a cue immediately requests a contextual target gloss and a
+full-sentence English translation, then prepares whole-sentence source-language
+TTS. Both translations are editable and the generated audio is playable before
+**Create card** sends the exact previewed bytes to AnkiConnect. The reviewer does
+not save cards, progress, transcript edits, or duplicate state; Anki rejects
+duplicate notes naturally. Source text is sent to Google for translation and
+speech generation. The destination deck is selected from Anki's live deck list,
+and a persistent result reports the created note ID or the failure. See
+`src/flashcards/README.md` for the artifact schema, extension build, and complete
+workflow.
 
 ## Project structure
 
 ```
-src/flashcards/       - generic media/transcript/card library + local reviewer
+src/flashcards/       - Python media/subtitle/ASR artifact generator
 src/quran_alignment/ - Python alignment pipeline (normalize → align → validate)
 scripts/             - pipeline runner + Anki deck generator
-tests/               - generic library and end-to-end media-card tests
+tests/               - Python artifact/alignment tests
 data/
   raw_audio/         - source MP3s per Surah (001.mp3 ... 114.mp3)
   text/              - cached Uthmani text per Surah
@@ -68,6 +81,12 @@ shared/     - domain models and WS message ADTs, compiled for JVM and JS (web ap
 backend/    - http4s server, WebSocket handler, static asset serving (web app)
 frontend/   - Laminar islands, compiled to ES modules (web app)
 static/     - plain HTML files (not generated, not templated) (web app)
+flashcards/shared/       - generic card/artifact domain + typed reviewer WS ADTs
+flashcards/ui/           - Laminar selection and card-preview components
+media-reviewer/backend/  - stateless JVM bridge to Google and AnkiConnect
+media-reviewer/frontend/ - standalone Scala.js reviewer
+extension/               - standalone Clausula Scala.js browser extension
+schema/                  - Python/Scala media artifact contract
 ```
 
 ## Generating alignment data for the entire Quran

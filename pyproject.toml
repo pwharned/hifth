@@ -11,16 +11,14 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-anki = ["genanki>=0.13,<0.14"]
+anki = ["genanki>=0.13,<0.14"] # Quran APKG generator only
+asr = ["faster-whisper>=1.2,<2"]
 
 [project.scripts]
 flashcards-import-subtitles = "flashcards.subtitles:main"
-flashcards-review = "flashcards.review:main"
-flashcards-export = "flashcards.export:main"
+flashcards-import-media = "flashcards.import_media:main"
+flashcards-prepare-asr = "flashcards.faster_whisper_backend:main_prepare"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["flashcards*", "quran_alignment*"]
-
-[tool.setuptools.package-data]
-flashcards = ["reviewer_static/*"]

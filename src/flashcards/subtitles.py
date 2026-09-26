@@ -10,7 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from .media import probe_duration_ms, sha256_file
-from .models import BaseToken, MediaSource, ProjectManifest, TextSpan, Utterance
+from .models import BaseToken, MediaArtifact, MediaSource, TextSpan, Utterance
 
 
 _TIMING_RE = re.compile(
@@ -190,7 +190,7 @@ def tokenize_base_units(text: str) -> tuple[BaseToken, ...]:
     return tuple(tokens)
 
 
-def manifest_from_subtitles(
+def artifact_from_subtitles(
     media_path: str | Path,
     subtitle_path: str | Path,
     *,
@@ -198,7 +198,8 @@ def manifest_from_subtitles(
     title: str | None = None,
     source_url: str | None = None,
     stored_media_path: str | None = None,
-) -> ProjectManifest:
+    validate_audio: bool = True,
+) -> MediaArtifact:
     media_file = Path(media_path)
     subtitles_file = Path(subtitle_path)
     if not media_file.is_file():
@@ -207,8 +208,26 @@ def manifest_from_subtitles(
         raise FileNotFoundError(f"Subtitle file not found: {subtitles_file}")
     if not isinstance(language, str) or not language.strip():
         raise ValueError("language must be a nonempty string")
+    if type(validate_audio) is not bool:
+        raise ValueError("validate_audio must be a boolean")
 
+    source_stat = media_file.stat()
+    source_signature = (source_stat.st_size, source_stat.st_mtime_ns)
     checksum = sha256_file(media_file)
+    current_stat = media_file.stat()
+    if (current_stat.st_size, current_stat.st_mtime_ns) != source_signature:
+        raise ValueError("media changed while its checksum was being calculated")
+    if validate_audio:
+        from .import_media import probe_audio_streams
+
+        audio_streams = probe_audio_streams(media_file)
+        if not audio_streams:
+            raise ValueError(f"media contains no usable audio stream: {media_file}")
+        if len(audio_streams) > 1:
+            raise ValueError(
+                "media contains multiple audio streams; use flashcards-import-media "
+                "after remuxing the desired track"
+            )
     media_id = f"media-{checksum[:24]}"
     cues = parse_subtitles(subtitles_file.read_text(encoding="utf-8-sig"))
     duration_ms = probe_duration_ms(media_file)
@@ -233,32 +252,34 @@ def manifest_from_subtitles(
     if not utterances:
         raise ValueError("no subtitle cues overlap the media duration")
 
-    project_title = title or media_file.stem
-    project_identity = f"{media_id}\0{language}\0{project_title}"
-    project_id = f"project-{hashlib.sha256(project_identity.encode('utf-8')).hexdigest()[:24]}"
+    artifact_title = title or media_file.stem
+    artifact_identity = f"{media_id}\0{language}\0{artifact_title}"
+    artifact_id = f"artifact-{hashlib.sha256(artifact_identity.encode('utf-8')).hexdigest()[:24]}"
     source = MediaSource(
         id=media_id,
         path=stored_media_path or str(media_file.resolve()),
         language=language,
-        title=project_title,
+        title=artifact_title,
         source_url=source_url,
         checksum_sha256=checksum,
         duration_ms=duration_ms,
     )
-    return ProjectManifest(
-        id=project_id,
-        title=project_title,
+    artifact = MediaArtifact(
+        id=artifact_id,
+        title=artifact_title,
         language=language,
         media=(source,),
         utterances=tuple(utterances),
-        learning_units=(),
-        cards=(),
     )
+    current_stat = media_file.stat()
+    if (current_stat.st_size, current_stat.st_mtime_ns) != source_signature:
+        raise ValueError("media changed while subtitles were being imported")
+    return artifact
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create a reviewable flashcard project from local media and SRT/VTT subtitles."
+        description="Create a media transcript artifact from local media and SRT/VTT subtitles."
     )
     parser.add_argument("media", type=Path)
     parser.add_argument("subtitles", type=Path)
@@ -266,26 +287,34 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--title")
     parser.add_argument("--source-url")
+    parser.add_argument("--force", action="store_true", help="Overwrite an existing artifact")
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+    from .import_media import _require_distinct_output
+
+    _require_distinct_output(args.out, args.media, args.subtitles)
+    if args.out.exists() and not args.force:
+        raise SystemExit(f"Output already exists: {args.out}; use --force to overwrite it")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     try:
         stored_path = os.path.relpath(args.media.resolve(), args.out.resolve().parent)
     except ValueError:
         stored_path = str(args.media.resolve())
-    manifest = manifest_from_subtitles(
+    from .import_media import _write_artifact, artifact_from_media
+
+    artifact = artifact_from_media(
         args.media,
-        args.subtitles,
         language=args.language,
+        subtitle_path=args.subtitles,
         title=args.title,
         source_url=args.source_url,
         stored_media_path=stored_path,
     )
-    args.out.write_text(manifest.to_json(indent=2) + "\n", encoding="utf-8")
-    print(f"Imported {len(manifest.utterances)} subtitle cue(s) -> {args.out}")
+    _write_artifact(args.out, artifact, force=args.force)
+    print(f"Imported {len(artifact.utterances)} subtitle cue(s) -> {args.out}")
 
 
 if __name__ == "__main__":

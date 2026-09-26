@@ -1,0 +1,211 @@
+#clausula-extension-root {
+  position: relative;
+  z-index: 2147483647;
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+#clausula-extension-root,
+#clausula-extension-root * {
+  box-sizing: border-box;
+}
+
+#clausula-extension-root .clausula-shell {
+  position: fixed;
+  z-index: 2147483647;
+  width: min(420px, calc(100vw - 24px));
+  pointer-events: none;
+}
+
+#clausula-extension-root .clausula-popup {
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 16px;
+  color: #1d2520;
+  background: #fbfcf9;
+  border: 1px solid #9ca99f;
+  border-radius: 8px;
+  box-shadow: 0 12px 35px rgba(14, 25, 17, 0.22);
+  pointer-events: auto;
+}
+
+#clausula-extension-root .clausula-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+#clausula-extension-root .clausula-kicker,
+#clausula-extension-root .fc-card-preview__label {
+  display: block;
+  margin-bottom: 3px;
+  color: #667169;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+#clausula-extension-root .clausula-target {
+  display: block;
+  color: #13271a;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+#clausula-extension-root button,
+#clausula-extension-root input,
+#clausula-extension-root textarea {
+  margin: 0;
+  font: inherit;
+}
+
+#clausula-extension-root button {
+  cursor: pointer;
+}
+
+#clausula-extension-root button:disabled,
+#clausula-extension-root input:disabled,
+#clausula-extension-root textarea:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+#clausula-extension-root .clausula-close {
+  padding: 2px 0;
+  color: #667169;
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+#clausula-extension-root .clausula-sentence {
+  margin: 0 0 6px;
+  padding: 10px 12px;
+  color: #27342b;
+  background: #eef1eb;
+  border-left: 3px solid #758b79;
+  border-radius: 3px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#clausula-extension-root .clausula-sentence mark {
+  padding: 1px 2px;
+  color: inherit;
+  background: #f7d777;
+  border-radius: 2px;
+}
+
+#clausula-extension-root .clausula-language {
+  margin-bottom: 12px;
+  color: #667169;
+  font-size: 12px;
+}
+
+#clausula-extension-root .clausula-field {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+  color: #354239;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#clausula-extension-root .clausula-field input,
+#clausula-extension-root .clausula-field textarea {
+  width: 100%;
+  padding: 8px 9px;
+  color: #1d2520;
+  background: #fff;
+  border: 1px solid #aeb8b0;
+  border-radius: 4px;
+  outline: none;
+  font-size: 14px;
+  font-weight: 400;
+  resize: vertical;
+}
+
+#clausula-extension-root .clausula-field input:focus,
+#clausula-extension-root .clausula-field textarea:focus {
+  border-color: #416f4e;
+  box-shadow: 0 0 0 2px rgba(65, 111, 78, 0.16);
+}
+
+#clausula-extension-root .fc-card-preview {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+#clausula-extension-root .fc-card-preview__side {
+  min-width: 0;
+  padding: 9px;
+  background: #f4f5f1;
+  border: 1px solid #d5dad4;
+  border-radius: 4px;
+}
+
+#clausula-extension-root .fc-card-preview__value {
+  color: #263129;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#clausula-extension-root .clausula-status {
+  min-height: 20px;
+  margin: 6px 0 10px;
+  color: #59655d;
+  font-size: 12px;
+}
+
+#clausula-extension-root .clausula-status--error {
+  color: #a12525;
+  font-weight: 700;
+}
+
+#clausula-extension-root .clausula-status--success {
+  color: #26703a;
+  font-weight: 700;
+}
+
+#clausula-extension-root .clausula-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#clausula-extension-root .clausula-create,
+#clausula-extension-root .clausula-dismiss {
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+#clausula-extension-root .clausula-create {
+  flex: 1;
+  color: #fff;
+  background: #315f3d;
+  border: 1px solid #315f3d;
+}
+
+#clausula-extension-root .clausula-dismiss {
+  color: #354239;
+  background: #eef1eb;
+  border: 1px solid #aeb8b0;
+}
+
+@media (max-width: 480px) {
+  #clausula-extension-root .fc-card-preview {
+    grid-template-columns: 1fr;
+  }
+}

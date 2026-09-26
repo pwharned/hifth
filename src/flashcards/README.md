@@ -1,93 +1,110 @@
-# Flashcard core
+# Media transcript artifacts
 
-`flashcards` is the language-neutral part of the repository. It models timed
-media transcripts, exact learning-unit spans, card drafts, and Anki output.
-Quran-specific canonical-text mapping and progressive masking remain separate.
+Python has one responsibility in the generic flashcard workflow: turn media
+into an immutable, timed source-text artifact. It does not host the reviewer,
+translate selections, store cards, or export a generic Anki package.
 
-## Current workflow
-
-Install the local package and Anki exporter:
+## Generate an artifact
 
 ```bash
-python -m pip install -e ".[anki]"
-```
+python -m pip install -e ".[asr]"
 
-Choose an installed Ollama model when starting the reviewer. The default is
-`qwen3.5:9b`; installing it is an explicit user action, never something the
-application does automatically. Structured Qwen output requires Ollama 0.32.0
-or newer:
+# The only command allowed to download ASR weights.
+flashcards-prepare-asr --model medium
 
-```bash
-ollama pull qwen3.5:9b
-```
-
-Create a project from local media and source-language SRT or WebVTT subtitles:
-
-```bash
-flashcards-import-subtitles movie.mp4 movie.vi.srt \
+# External SRT or WebVTT.
+flashcards-import-media movie.mp4 \
+  --subtitles movie.vi.srt \
   --language vi \
-  --title "Movie title" \
   --out projects/movie.json
+
+# Matching embedded subtitles, then cache-only ASR fallback.
+flashcards-import-media movie.mkv \
+  --language vi \
+  --asr-model medium \
+  --out projects/movie.json
+
+# Audio-only input follows the same fallback.
+flashcards-import-media podcast.mp3 \
+  --language vi \
+  --asr-model medium \
+  --out projects/podcast.json
 ```
 
-Open the local review application:
+Use `--subtitle-stream N` when matching embedded tracks are ambiguous, or
+`--force-transcribe` to ignore embedded subtitles. Imports require exactly one
+audio stream so the wrong language track is never selected silently. Model
+weights are never downloaded by an import.
+
+The output contract is `schema/media-artifact-v1.schema.json`. It contains only
+media metadata, timed utterances, base tokens, and provenance. It deliberately
+has no card drafts, enrichment results, learning units, progress, or review
+state. Relative media paths are resolved from the artifact directory, and source
+checksums are verified when the Scala reviewer opens it.
+
+Stateful prototype manifests containing `cards` or `learning_units` are rejected.
+Regenerate them with `flashcards-import-media --force`; an existing transcription
+cache beside the output is reused, so this does not require retranscribing.
+
+## Review into Anki
+
+Install and run AnkiConnect, then start the reviewer:
 
 ```bash
-flashcards-review projects/movie.json
+sbt "mediaReviewerBackend/run projects/movie.json"
 ```
 
-The reviewer plays each subtitle cue, lets you select an exact contiguous
-token span, and automatically asks `qwen3.5:9b` for contextual translations
-and possible containing learning units. Clicking a suggestion expands the
-selection to its exact validated token range and fills its gloss, phrase type,
-component explanation, and sentence translation. Suggestions remain editable;
-the confirmed manual span is what is written to the project manifest. "Export
-Anki deck" clips the original media for every card and writes
-`projects/movie.apkg`.
+Open `http://127.0.0.1:8766`. Selecting any exact text span automatically sends
+the sentence to Google for an English sentence translation, an exact contextual
+selection translation, and whole-sentence source-language TTS. The source cue
+and generated TTS have separate players. Review or edit both translations,
+listen to the generated audio, and create the card. The exact previewed TTS
+bytes are then sent to AnkiConnect; no reviewer state is written. The reviewer
+loads Anki's current deck list, lets you choose the destination, and keeps a
+visible success, duplicate, failure, or unknown-result message beside the Create
+button. Successful results include the Anki note ID and destination deck.
 
-Analysis can be disabled or configured without changing the project format:
+Useful runtime options:
 
 ```bash
-flashcards-review projects/movie.json --no-analysis
-flashcards-review projects/movie.json --model qwen3.5:4b
-flashcards-review projects/movie.json --model qwen3.6:35b
+sbt "mediaReviewerBackend/run \
+  --deck Default \
+  --anki-model Cloze \
+  projects/movie.json"
 ```
 
-Use `ollama list` to see models already present on the machine. If the selected
-model is missing, the reviewer reports the exact pull command but remains fully
-usable for manual span selection.
+`--deck` sets the initial preference. If it exists, it is selected from the live
+Anki deck list; otherwise the first available deck is selected.
 
-The reviewer talks only to loopback Ollama URLs and explicitly bypasses system
-HTTP proxies. Valid analyses are cached in
-`projects/movie.analysis-cache.json` using the model digest, prompt version,
-language, sentence, and exact token spans. Invalid model ranges are rejected
-and retried once before the reviewer falls back to manual selection.
+The reviewer requires internet access for Google Translate and Google TTS.
+Selected text and complete source sentences leave the machine; media files do
+not. AnkiConnect remains restricted to loopback hosts. The configured Anki model
+must expose `Text`, `Back Extra`, and `Translation`. The final fields are:
 
-A manifest can also be exported without opening the reviewer:
+- `Text`: one exact-offset `{{c1::...}}` plus `[sound:...]`
+- `Back Extra`: empty
+- `Translation`: `<selection translation> : <sentence translation>`
+
+Anki is the only system of record and handles duplicate rejection.
+Generated audio is transient: one preparation is held in bounded memory per
+WebSocket, expires after 30 minutes, and is discarded on reselection,
+disconnect, successful creation, or duplicate rejection.
+
+## Browser extension
 
 ```bash
-flashcards-export projects/movie.json --out projects/movie.apkg
+sbt clausulaExtension/fullLinkJS
 ```
 
-All processing is local. The subtitle importer itself does not call a model;
-the reviewer calls the Ollama API at `http://127.0.0.1:11434` and never sends
-text or media to an external service.
+Load `extension/dist` as an unpacked Manifest V3 extension. It shares the Scala
+card domain and preview UI but remains runtime-independent: page translation,
+whole-sentence TTS, and AnkiConnect calls go through `extension/dist/background.js`.
+The extension intentionally retains Clausula's `Default` deck and customized
+`Cloze` model contract; the standalone reviewer exposes overrides as shown above.
 
-## Domain rules
+## Architecture
 
-- Character spans and token ranges are half-open: `[start, end)`.
-- Clozes are built from offsets, never unrestricted string replacement.
-- Orthographic tokens are base units. A learning unit may span several base
-  tokens, such as Vietnamese `học sinh`.
-- Scripts that normally omit spaces, including Chinese, Japanese, Thai, Lao,
-  Khmer, and Myanmar, use character-sized base units so the model can propose
-  larger word and phrase ranges.
-- Card and media identities are stable across regeneration.
-- `schema_version` is validated before a manifest is loaded.
-- Audio references retain source-media times and are materialized only during
-  export.
-
-Phrase discovery is language-neutral: the model receives the source language,
-exact sentence, and immutable numbered token list. Language-specific tools can
-later provide additional evidence, but manually confirmed spans remain the
-source of truth.
+All reviewer domain traffic uses the shared Scala `ClientMessage` and
+`ServerMessage` ADTs over one WebSocket. HTTP serves only static files and
+authenticated byte-range source/preview audio. Python/Scala compatibility is
+guarded by the JSON schema and the shared `media-artifact-v1.json` golden fixture.

@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from flashcards.subtitles import (  # noqa: E402
-    manifest_from_subtitles,
+    artifact_from_subtitles,
     parse_subtitles,
     tokenize_base_units,
 )
@@ -120,7 +120,7 @@ Xin <00:02.000>chào!
                 "1\n00:00:00,100 --> 00:00:01,500\nTôi là học sinh.\n",
                 encoding="utf-8",
             )
-            manifest = manifest_from_subtitles(media, subtitles, language="vi")
+            manifest = artifact_from_subtitles(media, subtitles, language="vi")
             self.assertEqual(len(manifest.utterances), 1)
             self.assertLessEqual(manifest.utterances[0].end_ms, manifest.media[0].duration_ms)
             self.assertEqual(manifest.utterances[0].tokens[2].text, "học")
