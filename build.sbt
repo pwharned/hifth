@@ -185,24 +185,6 @@ lazy val mediaReviewerBackend = project
     }.taskValue
   )
 
-lazy val clausulaExtension = project
-  .in(file("extension"))
-  .dependsOn(flashcardsSharedJS, flashcardsUi)
-  .enablePlugins(ScalaJSPlugin)
-  .settings(
-    name := "clausula-extension",
-    scalaVersion := scala3Version,
-    scalaJSUseMainModuleInitializer := true,
-    scalaJSLinkerConfig ~= (_.withModuleKind(ModuleKind.NoModule)),
-    libraryDependencies ++= Seq(
-      "com.raquo" %%% "laminar" % laminarVersion,
-      "org.scala-js" %%% "scalajs-dom" % scalajsDomVersion
-    ),
-    Compile / fastLinkJS / scalaJSLinkerOutputDirectory :=
-      (ThisBuild / baseDirectory).value / "extension" / "dist" / "js",
-    Compile / fullLinkJS / scalaJSLinkerOutputDirectory :=
-      (ThisBuild / baseDirectory).value / "extension" / "dist" / "js"
-  )
 // ── root ─────────────────────────────────────────────────────────────────────
 lazy val root = project
   .in(file("."))
@@ -215,8 +197,7 @@ lazy val root = project
     flashcardsSharedJS,
     flashcardsUi,
     mediaReviewerFrontend,
-    mediaReviewerBackend,
-    clausulaExtension
+    mediaReviewerBackend
   )
   .settings(
     name := "hifth",

@@ -90,18 +90,6 @@ Generated audio is transient: one preparation is held in bounded memory per
 WebSocket, expires after 30 minutes, and is discarded on reselection,
 disconnect, successful creation, or duplicate rejection.
 
-## Browser extension
-
-```bash
-sbt clausulaExtension/fullLinkJS
-```
-
-Load `extension/dist` as an unpacked Manifest V3 extension. It shares the Scala
-card domain and preview UI but remains runtime-independent: page translation,
-whole-sentence TTS, and AnkiConnect calls go through `extension/dist/background.js`.
-The extension intentionally retains Clausula's `Default` deck and customized
-`Cloze` model contract; the standalone reviewer exposes overrides as shown above.
-
 ## Architecture
 
 All reviewer domain traffic uses the shared Scala `ClientMessage` and

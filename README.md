@@ -23,7 +23,7 @@ The repository also contains a stateless language-learning card bridge. Python
 extracts an immutable timed transcript artifact from downloaded audio or video;
 a Scala JVM/Scala.js reviewer consumes that artifact, translates exact text
 selections and sentences with Google, prepares whole-sentence Google TTS, and
-sends Clausula-shaped notes directly to AnkiConnect. Anki remains the only card
+sends audio Cloze notes directly to AnkiConnect. Anki remains the only card
 and review store.
 
 Media can use external subtitles, an embedded source-language text track, or
@@ -85,7 +85,6 @@ flashcards/shared/       - generic card/artifact domain + typed reviewer WS ADTs
 flashcards/ui/           - Laminar selection and card-preview components
 media-reviewer/backend/  - stateless JVM bridge to Google and AnkiConnect
 media-reviewer/frontend/ - standalone Scala.js reviewer
-extension/               - standalone Clausula Scala.js browser extension
 schema/                  - Python/Scala media artifact contract
 ```
 

@@ -28,7 +28,6 @@ Thumbs.db
 *.log
 target/
 static/js/
-extension/dist/js/
 /at_the_airport.json
 /at_the_arport.mp3
 output.log
