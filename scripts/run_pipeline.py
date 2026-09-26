@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_BACKEND_DIR = Path(
-    "../quran/backend/src/main/resources/static/data/surah"
+    "hifth/backend/src/main/resources/static/data/surah"
 )
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 def run_surah(surah_number: int, device: str, backend_dir: Path) -> bool:

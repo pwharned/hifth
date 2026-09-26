@@ -5,14 +5,15 @@ import cats.syntax.all.*
 import com.github.pwharned.flashcards.shared.domain.{Enrichment, SelectionSpan}
 
 import java.io.{ByteArrayOutputStream, IOException}
-import java.net.{URI, URLEncoder}
-import java.net.http.{HttpClient, HttpRequest, HttpResponse, HttpTimeoutException}
+import java.net.URI
+import java.net.http.{HttpClient, HttpRequest, HttpResponse, HttpTimeoutException, WebSocket}
 import java.nio.{ByteBuffer, CharBuffer}
 import java.nio.charset.{CodingErrorAction, StandardCharsets}
-import java.security.MessageDigest
-import java.time.Duration
-import java.util.{HexFormat, Locale}
-import java.util.concurrent.{CompletableFuture, CompletionStage, Flow}
+import java.security.{MessageDigest, SecureRandom}
+import java.time.{Duration, Instant, ZoneOffset}
+import java.time.format.DateTimeFormatter
+import java.util.{HexFormat, Locale, UUID}
+import java.util.concurrent.{CancellationException, CompletableFuture, CompletionStage, Flow}
 import scala.concurrent.duration.DurationLong
 
 private[backend] trait GoogleGateway:
@@ -42,18 +43,43 @@ private[backend] object GooglePreparation:
   ): GooglePreparation =
     new GooglePreparation(enrichment, sourceLanguage, filename, audioBytes.clone(), sha256)
 
+private[backend] final case class MicrosoftSpeechRequest(
+    uri: URI,
+    headers: Vector[(String, String)],
+    messages: Vector[String],
+    requestTimeout: Duration,
+    maxAudioBytes: Int
+)
+
+private[backend] trait MicrosoftSpeechTransport:
+  def synthesize(request: MicrosoftSpeechRequest): IO[Array[Byte]]
+
 private[backend] object GoogleClient:
   private[backend] val LiveTranslationEndpoint: URI =
-    URI.create("https://translate.googleapis.com/translate_a/single")
+    URI.create("https://translate.google.com/_/TranslateWebserverUi/data/batchexecute")
   private[backend] val LiveSpeechEndpoint: URI =
     URI.create("https://translate.googleapis.com/translate_tts")
+  private[backend] val LiveMicrosoftSpeechEndpoint: URI =
+    URI.create("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1")
   private[backend] val DefaultRequestTimeout: Duration = Duration.ofSeconds(30)
   private[backend] val DefaultOverallTimeout: Duration = Duration.ofMinutes(2)
   private[backend] val MaxSentenceUtf16: Int = 5000
-  private[backend] val MaxTtsChunkUtf16: Int = 180
   private[backend] val MaxAudioBytes: Int = 10 * 1024 * 1024
 
+  private[backend] val UserAgent: String =
+    "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36"
+  private[backend] val Referer: String = "https://translate.google.com/"
+  private[backend] val TranslationContentType: String =
+    "application/x-www-form-urlencoded;charset=utf-8"
+
   private val ConnectTimeout = Duration.ofSeconds(10)
+  private val SecureRandomSource = new SecureRandom()
+  private val CurrentTimeMillis: () => Long = () => System.currentTimeMillis()
+  private val RandomId: () => String = () => UUID.randomUUID().toString.replace("-", "")
+  private val RandomMuidBytes: () => Array[Byte] = () =>
+    val bytes = new Array[Byte](16)
+    SecureRandomSource.nextBytes(bytes)
+    bytes
 
   def live: GoogleClient =
     val httpClient = HttpClient
@@ -66,7 +92,11 @@ private[backend] object GoogleClient:
       LiveTranslationEndpoint,
       LiveSpeechEndpoint,
       DefaultRequestTimeout,
-      DefaultOverallTimeout
+      DefaultOverallTimeout,
+      new JdkMicrosoftSpeechTransport(httpClient),
+      CurrentTimeMillis,
+      RandomId,
+      RandomMuidBytes
     )
 
   private[backend] def withEndpoints(
@@ -81,7 +111,34 @@ private[backend] object GoogleClient:
       translationEndpoint,
       speechEndpoint,
       requestTimeout,
-      overallTimeout
+      overallTimeout,
+      new JdkMicrosoftSpeechTransport(httpClient),
+      CurrentTimeMillis,
+      RandomId,
+      RandomMuidBytes
+    )
+
+  private[backend] def withMicrosoftTransport(
+      translationEndpoint: URI,
+      speechEndpoint: URI,
+      httpClient: HttpClient,
+      microsoftTransport: MicrosoftSpeechTransport,
+      requestTimeout: Duration = DefaultRequestTimeout,
+      overallTimeout: Duration = DefaultOverallTimeout,
+      currentTimeMillis: () => Long = CurrentTimeMillis,
+      randomId: () => String = RandomId,
+      randomMuidBytes: () => Array[Byte] = RandomMuidBytes
+  ): GoogleClient =
+    new GoogleClient(
+      httpClient,
+      translationEndpoint,
+      speechEndpoint,
+      requestTimeout,
+      overallTimeout,
+      microsoftTransport,
+      currentTimeMillis,
+      randomId,
+      randomMuidBytes
     )
 
 private[backend] final class GoogleClient private (
@@ -89,13 +146,22 @@ private[backend] final class GoogleClient private (
     translationEndpoint: URI,
     speechEndpoint: URI,
     requestTimeout: Duration,
-    overallTimeout: Duration
+    overallTimeout: Duration,
+    microsoftTransport: MicrosoftSpeechTransport,
+    currentTimeMillis: () => Long,
+    randomId: () => String,
+    randomMuidBytes: () => Array[Byte]
 ) extends GoogleGateway:
   import GoogleClient.*
 
   private final case class ValidInput(selectedText: String, artifactLanguage: String)
   private final case class Translation(text: String, detectedLanguage: Option[String])
   private final case class Markers(open: String, close: String)
+  private final case class RawResponse(
+      statusCode: Int,
+      headers: java.net.http.HttpHeaders,
+      body: Array[Byte]
+  )
 
   private val TargetLanguage = "en"
   private val MarkerPairs = Vector(
@@ -105,6 +171,7 @@ private[backend] final class GoogleClient private (
     Markers("\u301a", "\u301b")
   )
   private val MaxTranslationResponseBytes = 2 * 1024 * 1024
+  private val XsrfPattern = "\"xsrf\",\"([^\"]+)\"".r
 
   require(httpClient.followRedirects() == HttpClient.Redirect.NEVER,
     "Google HTTP client must not follow redirects")
@@ -136,7 +203,7 @@ private[backend] final class GoogleClient private (
           Enrichment(targetGloss, sentenceResult.text).validate.left.map: message =>
             new IllegalStateException(s"Google returned invalid enrichment: $message")
         )
-        filename = audioFilename(sentence, sourceLanguage)
+        filename = audioFilename(sentence, input.selectedText, sourceLanguage)
         audioSha256 = sha256(audioBytes)
       yield GooglePreparation(
         enrichment,
@@ -235,110 +302,118 @@ private[backend] final class GoogleClient private (
       Option.when(end >= contentStart)(value.substring(contentStart, end).trim).filter(_.nonEmpty)
 
   private def translate(text: String, sourceLanguage: String, operation: String): IO[Translation] =
-    val uri = queryUri(
-      translationEndpoint,
-      List(
-        "client" -> "gtx",
-        "sl" -> sourceLanguage,
-        "tl" -> TargetLanguage,
-        "dt" -> "t",
-        "q" -> text
-      )
-    )
-    getBytes(
-      uri,
+    val requestBody = GoogleTranslationRpc.packageRpc(text, sourceLanguage, TargetLanguage)
+    postTranslation(requestBody, operation).flatMap: firstResponse =>
+      val finalResponse =
+        if firstResponse.statusCode == 400 then
+          val responseText = new String(firstResponse.body, StandardCharsets.UTF_8)
+          XsrfPattern.findFirstMatchIn(responseText) match
+            case Some(tokenMatch) =>
+              postTranslation(
+                requestBody + "&at=" + JavaScriptEncoding.encodeURIComponent(tokenMatch.group(1)),
+                operation
+              )
+            case None => IO.pure(firstResponse)
+        else IO.pure(firstResponse)
+
+      finalResponse.flatMap: response =>
+        successfulBody(response, s"Google $operation", "application/json").flatMap: bytes =>
+          IO.fromEither(
+            GoogleTranslationJson.parse(bytes).left.map: message =>
+              new IllegalStateException(
+                s"Google $operation returned an invalid translation response: $message"
+              )
+          ).map(parsed => Translation(parsed._1, parsed._2))
+
+  private def postTranslation(requestBody: String, operation: String): IO[RawResponse] =
+    val request = HttpRequest
+      .newBuilder(translationEndpoint)
+      .timeout(requestTimeout)
+      .header("Content-Type", TranslationContentType)
+      .header("User-Agent", UserAgent)
+      .header("Referer", Referer)
+      .POST(HttpRequest.BodyPublishers.ofString(requestBody, StandardCharsets.UTF_8))
+      .build()
+    execute(
+      request,
       s"Google $operation",
-      "application/json",
       MaxTranslationResponseBytes,
       s"Google $operation response exceeded $MaxTranslationResponseBytes bytes"
-    ).flatMap: bytes =>
-      IO.fromEither(
-        GoogleTranslationJson.parse(bytes).left.map: message =>
-          new IllegalStateException(
-            s"Google $operation returned an invalid translation response: $message"
-          )
-      ).map(parsed => Translation(parsed._1, parsed._2))
+    )
 
   private def synthesize(sentence: String, sourceLanguage: String): IO[Array[Byte]] =
-    val chunks = splitForTts(sentence)
-    IO.defer:
-      val output = new ByteArrayOutputStream()
-      chunks
-        .foldLeft(IO.pure(output)): (current, chunk) =>
-          current.flatMap: audio =>
-            val remaining = MaxAudioBytes - audio.size()
-            if remaining <= 0 then
-              IO.raiseError(
-                new IllegalStateException("Google speech audio exceeds the 10 MiB limit")
-              )
-            else
-              val uri = queryUri(
-                speechEndpoint,
-                List(
-                  "ie" -> "UTF-8",
-                  "client" -> "tw-ob",
-                  "tl" -> sourceLanguage,
-                  "q" -> chunk
-                )
-              )
-              getBytes(
-                uri,
-                "Google speech request",
-                "audio/mpeg",
-                remaining,
-                "Google speech audio exceeds the 10 MiB limit"
-              ).flatMap: part =>
-                if part.isEmpty then
-                  IO.raiseError(new IllegalStateException("Google speech returned empty audio"))
-                else
-                  IO.delay:
-                    audio.write(part)
-                    audio
-        .flatMap: audio =>
-          if audio.size() == 0 then
-            IO.raiseError(new IllegalStateException("Google speech returned empty audio"))
-          else IO.pure(audio.toByteArray)
+    if sourceLanguage == "fa" then synthesizePersian(sentence)
+    else synthesizeGoogle(sentence, sourceLanguage)
 
-  private def splitForTts(sentence: String): List[String] =
-    val chunks = List.newBuilder[String]
-    var remaining = stripWhitespace(sentence)
-    while remaining.length > MaxTtsChunkUtf16 do
-      var splitAt = -1
-      var index = MaxTtsChunkUtf16
-      while splitAt < 0 && index > MaxTtsChunkUtf16 / 2 do
-        if isWhitespace(remaining.charAt(index)) then splitAt = index
-        index -= 1
-      if splitAt < 0 then splitAt = MaxTtsChunkUtf16
-      if splitsSurrogatePair(remaining, splitAt) then splitAt -= 1
-
-      val chunk = stripWhitespace(remaining.substring(0, splitAt))
-      if chunk.nonEmpty then chunks += chunk
-      remaining = stripWhitespace(remaining.substring(splitAt))
-    if remaining.nonEmpty then chunks += remaining
-    chunks.result()
-
-  private def getBytes(
-      uri: URI,
-      operation: String,
-      accept: String,
-      maxBytes: Int,
-      tooLargeMessage: String
-  ): IO[Array[Byte]] = IO.interruptibleMany:
+  private def synthesizeGoogle(sentence: String, sourceLanguage: String): IO[Array[Byte]] =
+    val uri = URI.create(
+      s"${speechEndpoint.toASCIIString}?ie=UTF-8&q=${JavaScriptEncoding.encodeURIComponent(sentence)}" +
+        s"&tl=$sourceLanguage&client=tw-ob"
+    )
     val request = HttpRequest
       .newBuilder(uri)
       .timeout(requestTimeout)
-      .header("Accept", accept)
+      .header("Referer", Referer)
+      .header("User-Agent", UserAgent)
       .GET()
       .build()
+    execute(
+      request,
+      "Google speech request",
+      MaxAudioBytes,
+      "Google speech audio exceeds the 10 MiB limit"
+    ).flatMap: response =>
+      successfulBody(response, "Google speech request", "audio/mpeg").flatMap: bytes =>
+        validateAudio(bytes, "Google speech")
+
+  private def synthesizePersian(sentence: String): IO[Array[Byte]] =
+    val secMsGec = MicrosoftSpeechProtocol.secMsGec(currentTimeMillis())
+    val connectionId = randomId().replace("-", "")
+    val muid = MicrosoftSpeechProtocol.muid(randomMuidBytes())
+    val configTimestamp = MicrosoftSpeechProtocol.timestamp(currentTimeMillis())
+    val requestId = randomId().replace("-", "")
+    val ssmlTimestamp = MicrosoftSpeechProtocol.timestamp(currentTimeMillis())
+    val request = MicrosoftSpeechRequest(
+      uri = MicrosoftSpeechProtocol.uri(LiveMicrosoftSpeechEndpoint, secMsGec, connectionId),
+      headers = MicrosoftSpeechProtocol.headers(muid),
+      messages = Vector(
+        MicrosoftSpeechProtocol.speechConfig(configTimestamp),
+        MicrosoftSpeechProtocol.ssml(sentence, requestId, ssmlTimestamp)
+      ),
+      requestTimeout = requestTimeout,
+      maxAudioBytes = MaxAudioBytes
+    )
+
+    microsoftTransport
+      .synthesize(request)
+      .timeoutTo(
+        requestTimeout.toNanos.nanos,
+        IO.raiseError(
+          new IllegalStateException(
+            s"Microsoft speech request timed out after ${requestTimeout.toMillis} ms"
+          )
+        )
+      )
+      .flatMap(bytes => validateAudio(bytes, "Microsoft speech"))
+
+  private def validateAudio(bytes: Array[Byte], provider: String): IO[Array[Byte]] =
+    if bytes.isEmpty then
+      IO.raiseError(new IllegalStateException(s"$provider returned empty audio"))
+    else if bytes.length > MaxAudioBytes then
+      IO.raiseError(new IllegalStateException(s"$provider audio exceeds the 10 MiB limit"))
+    else IO.pure(bytes)
+
+  private def execute(
+      request: HttpRequest,
+      operation: String,
+      maxBytes: Int,
+      tooLargeMessage: String
+  ): IO[RawResponse] = IO.interruptibleMany:
     val handler = new HttpResponse.BodyHandler[Array[Byte]]:
       override def apply(
           responseInfo: HttpResponse.ResponseInfo
       ): HttpResponse.BodySubscriber[Array[Byte]] =
-        if responseInfo.statusCode() == 200 &&
-          responseContentType(responseInfo.headers()).contains(accept)
-        then
-          new LimitedByteArraySubscriber(maxBytes, tooLargeMessage)
-        else HttpResponse.BodySubscribers.replacing[Array[Byte]](Array.emptyByteArray)
+        new LimitedByteArraySubscriber(maxBytes, tooLargeMessage)
 
     val response =
       try httpClient.send(request, handler)
@@ -366,23 +441,29 @@ private[backend] final class GoogleClient private (
               throw new IllegalStateException(tooLarge.getMessage, error)
             case None => throw error
 
-    if response.statusCode() != 200 then
-      val redirect = response.statusCode() >= 300 && response.statusCode() < 400
+    RawResponse(response.statusCode(), response.headers(), response.body())
+
+  private def successfulBody(
+      response: RawResponse,
+      operation: String,
+      expectedContentType: String
+  ): IO[Array[Byte]] = IO.delay:
+    if response.statusCode != 200 then
+      val redirect = response.statusCode >= 300 && response.statusCode < 400
       val detail = if redirect then "redirects are not allowed" else "request failed"
       throw new IllegalStateException(
-        s"$operation $detail with HTTP status ${response.statusCode()}"
+        s"$operation $detail with HTTP status ${response.statusCode}"
       )
-    responseContentType(response.headers()) match
+    responseContentType(response.headers) match
       case None =>
         throw new IllegalStateException(
-          s"$operation returned no Content-Type; expected $accept"
+          s"$operation returned no Content-Type; expected $expectedContentType"
         )
-      case Some(actual) if actual != accept =>
+      case Some(actual) if actual != expectedContentType =>
         throw new IllegalStateException(
-          s"$operation returned Content-Type '$actual'; expected $accept"
+          s"$operation returned Content-Type '$actual'; expected $expectedContentType"
         )
-      case _ => ()
-    response.body()
+      case _ => response.body
 
   private def responseContentType(headers: java.net.http.HttpHeaders): Option[String] =
     val value = headers.firstValue("Content-Type")
@@ -390,21 +471,10 @@ private[backend] final class GoogleClient private (
       .map(_.takeWhile(_ != ';').trim.toLowerCase(Locale.ROOT))
       .filter(_.nonEmpty)
 
-  private def queryUri(endpoint: URI, parameters: List[(String, String)]): URI =
-    val query = parameters
-      .map: (name, value) =>
-        s"${encodeQuery(name)}=${encodeQuery(value)}"
-      .mkString("&")
-    URI.create(s"${endpoint.toASCIIString}?$query")
-
-  private def encodeQuery(value: String): String =
-    URLEncoder.encode(value, StandardCharsets.UTF_8)
-
-  private def audioFilename(sentence: String, language: String): String =
-    val identity = s"$language\u0000$sentence".getBytes(StandardCharsets.UTF_8)
-    val identityHash = sha256(identity).take(20)
-    val safeLanguage = language.replaceAll("[^a-z0-9-]", "_")
-    s"clausula_${safeLanguage}_${identityHash}.mp3"
+  private def audioFilename(sentence: String, selectedText: String, language: String): String =
+    val text = if sentence.length <= 200 then sentence else selectedText
+    val textHash = sha256(text.getBytes(StandardCharsets.UTF_8)).take(16)
+    s"clausula_${language}_${textHash}.mp3"
 
   private def sha256(bytes: Array[Byte]): String =
     HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))
@@ -424,21 +494,6 @@ private[backend] final class GoogleClient private (
       s"Google $name endpoint must not contain a query or fragment")
     require(endpoint.getRawUserInfo == null,
       s"Google $name endpoint must not contain user information")
-
-  private def stripWhitespace(value: String): String =
-    var start = 0
-    var end = value.length
-    while start < end && isWhitespace(value.charAt(start)) do start += 1
-    while end > start && isWhitespace(value.charAt(end - 1)) do end -= 1
-    value.substring(start, end)
-
-  private def isWhitespace(character: Char): Boolean =
-    Character.isWhitespace(character) || Character.isSpaceChar(character)
-
-  private def splitsSurrogatePair(value: String, index: Int): Boolean =
-    index > 0 && index < value.length &&
-      Character.isHighSurrogate(value.charAt(index - 1)) &&
-      Character.isLowSurrogate(value.charAt(index))
 
   private def isWellFormedUtf16(value: String): Boolean =
     var index = 0
@@ -510,7 +565,309 @@ private final class LimitedByteArraySubscriber(limit: Int, tooLargeMessage: Stri
     subscription.cancel()
     result.completeExceptionally(error)
 
-private object GoogleTranslationJson:
+private[backend] object JavaScriptEncoding:
+  def encodeURIComponent(value: String): String =
+    val output = new StringBuilder(value.length)
+    value.getBytes(StandardCharsets.UTF_8).foreach: byte =>
+      val unsigned = byte & 0xff
+      val character = unsigned.toChar
+      if isEncodeUriComponentSafe(unsigned, character) then output.append(character)
+      else output.append('%').append(f"$unsigned%02X")
+    output.result()
+
+  def trim(value: String): String =
+    var start = 0
+    var end = value.length
+    while start < end && isEcmaScriptWhitespace(value.charAt(start)) do start += 1
+    while end > start && isEcmaScriptWhitespace(value.charAt(end - 1)) do end -= 1
+    value.substring(start, end)
+
+  def jsonString(value: String): String =
+    val output = new StringBuilder(value.length + 2)
+    output.append('"')
+    value.foreach:
+      case '"'  => output.append("\\\"")
+      case '\\' => output.append("\\\\")
+      case '\b' => output.append("\\b")
+      case '\f' => output.append("\\f")
+      case '\n' => output.append("\\n")
+      case '\r' => output.append("\\r")
+      case '\t' => output.append("\\t")
+      case character if character < ' ' => output.append(f"\\u${character.toInt}%04x")
+      case character => output.append(character)
+    output.append('"').result()
+
+  private def isEncodeUriComponentSafe(unsigned: Int, character: Char): Boolean =
+    (unsigned >= 'a' && unsigned <= 'z') ||
+      (unsigned >= 'A' && unsigned <= 'Z') ||
+      (unsigned >= '0' && unsigned <= '9') ||
+      "-_.!~*'()".contains(character)
+
+  private def isEcmaScriptWhitespace(character: Char): Boolean =
+    (character >= '\u0009' && character <= '\u000d') ||
+      character == '\u0020' ||
+      character == '\u00a0' ||
+      character == '\u1680' ||
+      (character >= '\u2000' && character <= '\u200a') ||
+      character == '\u2028' ||
+      character == '\u2029' ||
+      character == '\u202f' ||
+      character == '\u205f' ||
+      character == '\u3000' ||
+      character == '\ufeff'
+
+private[backend] object GoogleTranslationRpc:
+  def packageRpc(text: String, sourceLanguage: String, targetLanguage: String): String =
+    val parameter =
+      s"[[${JavaScriptEncoding.jsonString(JavaScriptEncoding.trim(text))}," +
+        s"${JavaScriptEncoding.jsonString(sourceLanguage)}," +
+        s"${JavaScriptEncoding.jsonString(targetLanguage)},true],[1]]"
+    val rpc =
+      s"[[[\"MkEWBc\",${JavaScriptEncoding.jsonString(parameter)},null,\"generic\"]]]"
+    s"f.req=${JavaScriptEncoding.encodeURIComponent(rpc)}&"
+
+private[backend] final case class MicrosoftBinaryFrame(header: String, payload: Array[Byte])
+
+private[backend] object MicrosoftSpeechProtocol:
+  val SecMsGecVersion = "1-143.0.3650.75"
+  val TrustedClientToken = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
+  val Voice = "fa-IR-DilaraNeural"
+  val OutputFormat = "audio-24khz-48kbitrate-mono-mp3"
+  val BrowserOrigin = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
+  val BrowserUserAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+      "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+
+  private val WindowsEpochSeconds = 11644473600L
+  private val TicksPerSecond = 10000000L
+  private val TimestampFormatter = DateTimeFormatter
+    .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT)
+    .withZone(ZoneOffset.UTC)
+
+  def secMsGec(epochMillis: Long, clockSkewSeconds: Long = 0L): String =
+    val epochSeconds = Math.floorDiv(epochMillis, 1000L) + clockSkewSeconds
+    val intervalSeconds =
+      Math.floorDiv(epochSeconds + WindowsEpochSeconds, 300L) * 300L
+    val ticks = intervalSeconds * TicksPerSecond
+    val source = s"$ticks$TrustedClientToken".getBytes(StandardCharsets.UTF_8)
+    HexFormat.of().withUpperCase()
+      .formatHex(MessageDigest.getInstance("SHA-256").digest(source))
+
+  def muid(bytes: Array[Byte]): String =
+    require(bytes.length == 16, "Microsoft speech MUID must contain 16 bytes")
+    HexFormat.of().withUpperCase().formatHex(bytes)
+
+  def timestamp(epochMillis: Long): String =
+    TimestampFormatter.format(Instant.ofEpochMilli(epochMillis))
+
+  def uri(endpoint: URI, secMsGec: String, connectionId: String): URI =
+    URI.create(
+      s"${endpoint.toASCIIString}?TrustedClientToken=$TrustedClientToken" +
+        s"&Sec-MS-GEC=$secMsGec" +
+        s"&Sec-MS-GEC-Version=$SecMsGecVersion" +
+        s"&ConnectionId=$connectionId"
+    )
+
+  def headers(muid: String): Vector[(String, String)] =
+    Vector(
+      "Pragma" -> "no-cache",
+      "Cache-Control" -> "no-cache",
+      "Origin" -> BrowserOrigin,
+      "User-Agent" -> BrowserUserAgent,
+      "Accept-Encoding" -> "gzip, deflate, br, zstd",
+      "Accept-Language" -> "en-US,en;q=0.9",
+      "Cookie" -> s"muid=$muid;"
+    )
+
+  def speechConfig(timestamp: String): String =
+    s"X-Timestamp:$timestamp\r\n" +
+      "Content-Type:application/json; charset=utf-8\r\n" +
+      "Path:speech.config\r\n\r\n" +
+      s"{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
+      s"{\"sentenceBoundaryEnabled\":false,\"wordBoundaryEnabled\":true}," +
+      s"\"outputFormat\":\"$OutputFormat\"}}}}"
+
+  def ssml(sentence: String, requestId: String, timestamp: String): String =
+    s"X-RequestId:$requestId\r\n" +
+      "Content-Type:application/ssml+xml\r\n" +
+      s"X-Timestamp:${timestamp}Z\r\n" +
+      "Path:ssml\r\n\r\n" +
+      "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='fa'>" +
+      s"<voice name='$Voice'>" +
+      "<prosody pitch='+0Hz' rate='+0%' volume='+0%'>" +
+      escapeXml(sentence) +
+      "</prosody></voice></speak>"
+
+  def parseBinaryFrame(bytes: Array[Byte]): Either[String, MicrosoftBinaryFrame] =
+    if bytes.length < 2 then Left("Microsoft speech binary frame is missing its header length")
+    else
+      val headerLength = ((bytes(0) & 0xff) << 8) | (bytes(1) & 0xff)
+      if headerLength > bytes.length - 2 then
+        Left("Microsoft speech binary frame has an invalid header length")
+      else
+        decodeUtf8(bytes, 2, headerLength).map: header =>
+          MicrosoftBinaryFrame(header, bytes.slice(headerLength + 2, bytes.length))
+
+  private def escapeXml(value: String): String =
+    val output = new StringBuilder(value.length)
+    value.foreach:
+      case '&'  => output.append("&amp;")
+      case '<'  => output.append("&lt;")
+      case '>'  => output.append("&gt;")
+      case '"'  => output.append("&quot;")
+      case '\'' => output.append("&apos;")
+      case character => output.append(character)
+    output.result()
+
+  private def decodeUtf8(
+      bytes: Array[Byte],
+      offset: Int,
+      length: Int
+  ): Either[String, String] =
+    try
+      val decoder = StandardCharsets.UTF_8
+        .newDecoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+      Right(decoder.decode(ByteBuffer.wrap(bytes, offset, length)).toString)
+    catch case error: Throwable =>
+      Left(s"Microsoft speech binary header is not valid UTF-8: ${error.getMessage}")
+
+private final class JdkMicrosoftSpeechTransport(httpClient: HttpClient)
+    extends MicrosoftSpeechTransport:
+  override def synthesize(request: MicrosoftSpeechRequest): IO[Array[Byte]] = IO.defer:
+    val listener = new MicrosoftSpeechListener(request)
+    val builder = httpClient.newWebSocketBuilder().connectTimeout(request.requestTimeout)
+    request.headers.foreach((name, value) => builder.header(name, value))
+    val connection = builder.buildAsync(request.uri, listener)
+
+    IO.fromCompletableFuture(IO.pure(connection))
+      .flatMap: _ =>
+        IO.fromCompletableFuture(IO.pure(listener.result))
+      .onCancel(
+        IO.delay:
+          connection.cancel(true)
+          listener.abort()
+      )
+
+private[backend] final class MicrosoftSpeechListener(request: MicrosoftSpeechRequest)
+    extends WebSocket.Listener:
+  private val MaxProtocolBytes = 64 * 1024
+  private val resultFuture = new CompletableFuture[Array[Byte]]()
+  private val audio = new ByteArrayOutputStream()
+  private val binaryMessage = new ByteArrayOutputStream()
+  private val textMessage = new StringBuilder
+  private var socket: WebSocket = null
+  private var done = false
+
+  def result: CompletableFuture[Array[Byte]] = resultFuture
+
+  def abort(): Unit = synchronized:
+    if !done then
+      done = true
+      resultFuture.completeExceptionally(
+        new CancellationException("Microsoft speech request was cancelled")
+      )
+      if socket != null then socket.abort()
+
+  override def onOpen(webSocket: WebSocket): Unit = synchronized:
+    socket = webSocket
+    if done then webSocket.abort()
+    else
+      var sent = CompletableFuture.completedFuture(webSocket)
+      request.messages.foreach: message =>
+        sent = sent.thenCompose(_ => webSocket.sendText(message, true))
+      sent.whenComplete: (_, error) =>
+        if error != null then fail(error, webSocket)
+      webSocket.request(1)
+
+  override def onText(
+      webSocket: WebSocket,
+      data: CharSequence,
+      last: Boolean
+  ): CompletionStage[?] =
+    synchronized:
+      if !done then
+        if data.length() > MaxProtocolBytes - textMessage.length then
+          fail(new IllegalStateException("Microsoft speech text message is too large"), webSocket)
+        else
+          textMessage.append(data)
+          if last then
+            val message = textMessage.result()
+            textMessage.clear()
+            if message.contains("Path:turn.end") then finish(webSocket)
+      if !done then webSocket.request(1)
+    CompletableFuture.completedFuture(null)
+
+  override def onBinary(
+      webSocket: WebSocket,
+      data: ByteBuffer,
+      last: Boolean
+  ): CompletionStage[?] =
+    synchronized:
+      if !done then
+        val length = data.remaining()
+        val maxMessageBytes = request.maxAudioBytes + MaxProtocolBytes
+        if length > maxMessageBytes - binaryMessage.size() then
+          fail(new ResponseTooLarge("Microsoft speech audio exceeds the 10 MiB limit"), webSocket)
+        else
+          val bytes = new Array[Byte](length)
+          data.get(bytes)
+          binaryMessage.write(bytes)
+          if last then
+            val message = binaryMessage.toByteArray
+            binaryMessage.reset()
+            handleBinary(message, webSocket)
+      if !done then webSocket.request(1)
+    CompletableFuture.completedFuture(null)
+
+  override def onClose(
+      webSocket: WebSocket,
+      statusCode: Int,
+      reason: String
+  ): CompletionStage[?] =
+    synchronized:
+      if !done then
+        fail(
+          new IllegalStateException(s"Microsoft speech WebSocket closed: $statusCode $reason"),
+          webSocket,
+          abortSocket = false
+        )
+    CompletableFuture.completedFuture(null)
+
+  override def onError(webSocket: WebSocket, error: Throwable): Unit = synchronized:
+    if !done then fail(error, webSocket)
+
+  private def handleBinary(message: Array[Byte], webSocket: WebSocket): Unit =
+    MicrosoftSpeechProtocol.parseBinaryFrame(message) match
+      case Left(error) => fail(new IllegalStateException(error), webSocket)
+      case Right(frame) =>
+        if frame.header.contains("Path:audio") && frame.payload.nonEmpty then
+          if frame.payload.length > request.maxAudioBytes - audio.size() then
+            fail(new ResponseTooLarge("Microsoft speech audio exceeds the 10 MiB limit"), webSocket)
+          else audio.write(frame.payload)
+        if !done && frame.header.contains("Path:turn.end") then finish(webSocket)
+
+  private def finish(webSocket: WebSocket): Unit =
+    if audio.size() == 0 then
+      fail(new IllegalStateException("Microsoft speech returned empty audio"), webSocket)
+    else
+      done = true
+      resultFuture.complete(audio.toByteArray)
+      webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "")
+      ()
+
+  private def fail(
+      error: Throwable,
+      webSocket: WebSocket,
+      abortSocket: Boolean = true
+  ): Unit = synchronized:
+    if !done then
+      done = true
+      resultFuture.completeExceptionally(error)
+      if abortSocket then webSocket.abort()
+
+private[backend] object GoogleTranslationJson:
   private enum JsonValue:
     case StringValue(value: String)
     case ArrayValue(values: Vector[JsonValue])
@@ -524,11 +881,19 @@ private object GoogleTranslationJson:
   def parse(bytes: Array[Byte]): Either[String, (String, Option[String])] =
     for
       text <- decodeUtf8(bytes)
-      json <- new Parser(removeXssiPrefix(text)).parse()
-      translated = translationParts(json).mkString.trim
-      _ <- Either.cond(translated.nonEmpty, (), "translated text is empty or missing")
-      detected = detectedLanguage(json).map(_.trim).filter(_.nonEmpty)
-    yield translated -> detected
+      line <- Either.fromOption(
+        text.split("\n", -1).iterator.find(_.contains("MkEWBc")),
+        "MkEWBc response line is missing"
+      )
+      outer <- new Parser(line).parse()
+      outerRows <- asArray(outer, "outer JSON")
+      outerRow <- element(outerRows, 0, "outer JSON[0]")
+      outerFields <- asArray(outerRow, "outer JSON[0]")
+      encodedInnerValue <- element(outerFields, 2, "outer JSON[0][2]")
+      encodedInner <- asString(encodedInnerValue, "outer JSON[0][2]")
+      inner <- new Parser(encodedInner).parse()
+      parsed <- parseInner(inner)
+    yield parsed
 
   private def decodeUtf8(bytes: Array[Byte]): Either[String, String] =
     try
@@ -540,96 +905,71 @@ private object GoogleTranslationJson:
       Right(decoded.toString)
     catch case error: Throwable => Left(s"response is not valid UTF-8: ${error.getMessage}")
 
-  private def removeXssiPrefix(value: String): String =
-    val trimmed = value.dropWhile(isJsonWhitespace)
-    if trimmed.startsWith(")]}'") then
-      val newline = trimmed.indexOf('\n')
-      if newline >= 0 then trimmed.substring(newline + 1) else ""
-    else trimmed
+  private def parseInner(value: JsonValue): Either[String, (String, Option[String])] =
+    for
+      root <- asArray(value, "inner JSON")
+      metadataValue <- element(root, 0, "inner JSON[0]")
+      metadata <- asArray(metadataValue, "inner JSON[0]")
+      responseContainerValue <- element(root, 1, "inner JSON[1]")
+      responseContainer <- asArray(responseContainerValue, "inner JSON[1]")
+      responseValue <- element(responseContainer, 0, "inner JSON[1][0]")
+      response <- asArray(responseValue, "inner JSON[1][0]")
+      translated <- translationText(response)
+      detected <- detectedLanguage(metadata)
+    yield translated -> detected
 
-  private def translationParts(value: JsonValue): Vector[String] = value match
-    case ArrayValue(root) =>
-      root.headOption match
-        case Some(segment @ ArrayValue(fields)) if fields.headOption.exists(isString) =>
-          segmentText(segment).toVector
-        case Some(ArrayValue(segments)) => segments.flatMap(segmentText)
-        case Some(other)                => objectTranslationParts(other)
-        case None                       => Vector.empty
-    case other => objectTranslationParts(other)
+  private def translationText(response: Vector[JsonValue]): Either[String, String] =
+    val parts = response match
+      case Vector(ArrayValue(fields)) if fields.length > 5 =>
+        asArray(fields(5), "inner JSON[1][0][0][5]").flatMap: sentences =>
+          sentences.zipWithIndex.foldLeft(Right(Vector.empty): Either[String, Vector[String]]):
+            case (current, (sentence, index)) =>
+              for
+                values <- current
+                fields <- asArray(sentence, s"translation sentence[$index]")
+                value <- element(fields, 0, s"translation sentence[$index][0]")
+                text <- asString(value, s"translation sentence[$index][0]")
+              yield values :+ JavaScriptEncoding.trim(text)
+      case segments =>
+        segments.zipWithIndex.foldLeft(Right(Vector.empty): Either[String, Vector[String]]):
+          case (current, (segment, index)) =>
+            current.flatMap: values =>
+              segment match
+                case ArrayValue(fields) =>
+                  fields.headOption match
+                    case Some(StringValue(text)) if text.nonEmpty =>
+                      Right(values :+ JavaScriptEncoding.trim(text))
+                    case Some(NullValue) | Some(StringValue(_)) | None => Right(values)
+                    case Some(_) => Left(s"translation segment[$index][0] is not a string")
+                case _ => Right(values)
 
-  private def objectTranslationParts(value: JsonValue): Vector[String] = value match
-    case ObjectValue(fields) =>
-      directText(fields).toVector match
-        case values if values.nonEmpty => values
-        case _ =>
-          List("sentences", "translations", "data", "result")
-            .iterator
-            .flatMap(fields.get)
-            .map(containerTranslationParts)
-            .find(_.nonEmpty)
-            .getOrElse(Vector.empty)
-    case ArrayValue(values) => values.flatMap(segmentText)
-    case _                  => Vector.empty
+    parts.flatMap: values =>
+      val translated = JavaScriptEncoding.trim(values.mkString(" "))
+      Either.cond(translated.nonEmpty, translated, "translated text is empty or missing")
 
-  private def containerTranslationParts(value: JsonValue): Vector[String] = value match
-    case ArrayValue(values) => values.flatMap(segmentText)
-    case objectValue: ObjectValue => objectTranslationParts(objectValue)
-    case StringValue(value) => Vector(value)
-    case _ => Vector.empty
+  private def detectedLanguage(metadata: Vector[JsonValue]): Either[String, Option[String]] =
+    metadata.lift(2) match
+      case Some(StringValue(language)) =>
+        Right(Option(JavaScriptEncoding.trim(language)).filter(_.nonEmpty))
+      case Some(NullValue) | None => Right(None)
+      case Some(_) => Left("inner JSON[0][2] is not a string or null")
 
-  private def segmentText(value: JsonValue): Option[String] = value match
-    case ArrayValue(fields) => fields.headOption.collect { case StringValue(text) => text }
-    case ObjectValue(fields) => directText(fields)
-    case StringValue(text) => Some(text)
-    case _ => None
+  private def asArray(value: JsonValue, path: String): Either[String, Vector[JsonValue]] =
+    value match
+      case ArrayValue(values) => Right(values)
+      case _                  => Left(s"$path is not an array")
 
-  private def directText(fields: Map[String, JsonValue]): Option[String] =
-    List("trans", "translatedText", "translation", "text")
-      .iterator
-      .flatMap(fields.get)
-      .collectFirst { case StringValue(value) => value }
+  private def asString(value: JsonValue, path: String): Either[String, String] =
+    value match
+      case StringValue(text) => Right(text)
+      case _                 => Left(s"$path is not a string")
 
-  private def detectedLanguage(value: JsonValue): Option[String] = value match
-    case ArrayValue(values) if hasTranslationSegmentContainer(values) =>
-      values.lift(2).collect { case StringValue(language) => language }
-    case ArrayValue(_) => None
-    case ObjectValue(fields) => detectedLanguageInObject(fields)
-    case _ => None
-
-  private def hasTranslationSegmentContainer(values: Vector[JsonValue]): Boolean =
-    values.headOption.exists:
-      case ArrayValue(segments) =>
-        segments.headOption.forall:
-          case ArrayValue(_) | ObjectValue(_) | NullValue => true
-          case _                                           => false
-      case _ => false
-
-  private def detectedLanguageInObject(fields: Map[String, JsonValue]): Option[String] =
-    directLanguage(fields).orElse:
-      List("data", "translations", "sentences", "result")
-        .iterator
-        .flatMap(fields.get)
-        .map(detectedLanguageInContainer)
-        .collectFirst { case Some(language) => language }
-
-  private def detectedLanguageInContainer(value: JsonValue): Option[String] = value match
-    case ObjectValue(fields) => detectedLanguageInObject(fields)
-    case ArrayValue(values) =>
-      values.iterator
-        .collect { case ObjectValue(fields) => detectedLanguageInObject(fields) }
-        .collectFirst { case Some(language) => language }
-    case _ => None
-
-  private def directLanguage(fields: Map[String, JsonValue]): Option[String] =
-    List("src", "source", "sourceLanguage", "detectedLanguage", "detectedSourceLanguage")
-      .iterator
-      .flatMap(fields.get)
-      .collect { case StringValue(language) => language }
-      .find(_.trim.nonEmpty)
-
-  private def isString(value: JsonValue): Boolean = value match
-    case StringValue(_) => true
-    case _              => false
+  private def element(
+      values: Vector[JsonValue],
+      index: Int,
+      path: String
+  ): Either[String, JsonValue] =
+    values.lift(index).toRight(s"$path is missing")
 
   private def isJsonWhitespace(character: Char): Boolean =
     character == ' ' || character == '\t' || character == '\r' || character == '\n'

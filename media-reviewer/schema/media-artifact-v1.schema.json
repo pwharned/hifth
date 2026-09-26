@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pwharned/hifth/schema/media-artifact-v1.schema.json",
+  "$id": "https://github.com/pwharned/hifth/media-reviewer/schema/media-artifact-v1.schema.json",
   "title": "Hifth media transcript artifact",
   "type": "object",
   "additionalProperties": false,

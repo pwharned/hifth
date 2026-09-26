@@ -47,7 +47,7 @@ flashcards-import-media movie.mkv \
 flashcards-import-media podcast.mp3 \
   --language vi --asr-model medium --out projects/podcast.json
 
-sbt "mediaReviewerBackend/run projects/movie.json"
+sbt "backend/run projects/movie.json"
 ```
 
 Selecting text in a cue immediately requests a contextual target gloss and a
@@ -58,8 +58,10 @@ not save cards, progress, transcript edits, or duplicate state; Anki rejects
 duplicate notes naturally. Source text is sent to Google for translation and
 speech generation. The destination deck is selected from Anki's live deck list,
 and a persistent result reports the created note ID or the failure. See
-`src/flashcards/README.md` for the artifact schema, extension build, and complete
-workflow.
+`src/flashcards/README.md` for the artifact schema and complete workflow.
+
+The reviewer intentionally mirrors Clausula's undocumented `MkEWBc` translation
+RPC and `translate_tts` request rather than using a supported Google API.
 
 ## Project structure
 
@@ -77,15 +79,16 @@ data/
     verified/        - QA-passed alignment JSON (promoted from aligned/)
     anki/            - generated .apkg deck output
 
-shared/     - domain models and WS message ADTs, compiled for JVM and JS (web app)
-backend/    - http4s server, WebSocket handler, static asset serving (web app)
-frontend/   - Laminar islands, compiled to ES modules (web app)
-static/     - plain HTML files (not generated, not templated) (web app)
-flashcards/shared/       - generic card/artifact domain + typed reviewer WS ADTs
-flashcards/ui/           - Laminar selection and card-preview components
-media-reviewer/backend/  - stateless JVM bridge to Google and AnkiConnect
-media-reviewer/frontend/ - standalone Scala.js reviewer
-schema/                  - Python/Scala media artifact contract
+hifth/                    - legacy Quran memorization app with its own SBT build
+  shared/                 - Quran domain and typed WebSocket messages
+  backend/                - legacy SRS backend and static asset server
+  frontend/               - legacy Laminar memorization player
+  static/                 - generated legacy Scala.js output
+media-reviewer/           - root SBT application's Archipelago-style modules
+  shared/                 - card/artifact domain and typed WebSocket messages
+  backend/                - stateless Google TTS/translation and AnkiConnect bridge
+  frontend/               - standalone Laminar media reviewer and shared UI
+  schema/                 - Python/Scala media artifact contract
 ```
 
 ## Generating alignment data for the entire Quran
@@ -178,9 +181,11 @@ them and preserves their scheduling. Enable updating existing notes in the
 Anki import options. Changed audio may leave the previous clips unused;
 Anki's **Tools > Check Media** can remove them after import.
 
-## Web app architecture
+## Legacy Hifth web app architecture
 
-The core idea: the server serves plain HTML pages. Interactive functionality is provided by small, independent ScalaJS modules ("islands") that mount into specific elements on the page. All client-server communication goes through a single WebSocket connection using a shared typed message protocol.
+The original Quran memorization app is retained under `hifth/` with its own SBT
+build. Its server serves plain HTML pages, while small Scala.js islands mount
+into the page and communicate through one typed WebSocket.
 
 No REST endpoints. No SPA framework. No shared mutable state between islands except through the server.
 
@@ -224,11 +229,13 @@ Islands know nothing about WebSockets, serialization or connection state. `WsCli
 ## Running in development
 
 ```bash
+cd hifth
+
 # terminal 1 - recompile frontend on change
-sbt ~frontend/fastLinkJS
+sbt '~frontend/fastLinkJS'
 
 # terminal 2 - run backend with filesystem asset serving
-MODE=DEV sbt ~backend/reStart
+MODE=DEV sbt '~backend/reStart'
 ```
 
 Open `http://localhost:8080`.
@@ -238,6 +245,7 @@ The browser auto-reloads when the backend restarts via a lightweight SSE endpoin
 ## Production build
 
 ```bash
+cd hifth
 sbt backend/package
 ```
 
@@ -245,7 +253,7 @@ This compiles the frontend with full optimisation, copies the JS output into the
 
 ## Adding an island
 
-1. Create a new file in `frontend/src/main/scala/.../islands/`
+1. Create a new file in `hifth/frontend/src/main/scala/.../islands/`
 2. Export a mount function:
 
 ```scala

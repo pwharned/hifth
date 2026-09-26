@@ -1,7 +1,7 @@
 """
 quran_data.py
 -------------
-Python port of shared/src/.../domain/QuranData.scala.
+Python port of hifth/shared/src/.../domain/QuranData.scala.
 Only the pure lookup tables + segment math needed to group verified
 per-Surah word alignments into Quarter-Hizb (QH) spans. Kept independent
 from the Scala codebase on purpose (this is a separate export pipeline,

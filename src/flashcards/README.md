@@ -36,7 +36,7 @@ Use `--subtitle-stream N` when matching embedded tracks are ambiguous, or
 audio stream so the wrong language track is never selected silently. Model
 weights are never downloaded by an import.
 
-The output contract is `schema/media-artifact-v1.schema.json`. It contains only
+The output contract is `media-reviewer/schema/media-artifact-v1.schema.json`. It contains only
 media metadata, timed utterances, base tokens, and provenance. It deliberately
 has no card drafts, enrichment results, learning units, progress, or review
 state. Relative media paths are resolved from the artifact directory, and source
@@ -51,7 +51,7 @@ cache beside the output is reused, so this does not require retranscribing.
 Install and run AnkiConnect, then start the reviewer:
 
 ```bash
-sbt "mediaReviewerBackend/run projects/movie.json"
+sbt "backend/run projects/movie.json"
 ```
 
 Open `http://127.0.0.1:8766`. Selecting any exact text span automatically sends
@@ -67,7 +67,7 @@ button. Successful results include the Anki note ID and destination deck.
 Useful runtime options:
 
 ```bash
-sbt "mediaReviewerBackend/run \
+sbt "backend/run \
   --deck Default \
   --anki-model Cloze \
   projects/movie.json"
@@ -80,6 +80,12 @@ The reviewer requires internet access for Google Translate and Google TTS.
 Selected text and complete source sentences leave the machine; media files do
 not. AnkiConnect remains restricted to loopback hosts. The configured Anki model
 must expose `Text`, `Back Extra`, and `Translation`. The final fields are:
+
+As in Clausula, translation uses the undocumented Google Translate `MkEWBc`
+`batchexecute` RPC and its XSRF retry behavior. Non-Persian audio uses the
+undocumented `translate_tts` request; Persian uses the Microsoft Edge
+consumer-speech WebSocket and `fa-IR-DilaraNeural`. These private APIs may change
+without notice.
 
 - `Text`: one exact-offset `{{c1::...}}` plus `[sound:...]`
 - `Back Extra`: empty

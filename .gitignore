@@ -27,7 +27,7 @@ Thumbs.db
 .scala-build/
 *.log
 target/
-static/js/
+/hifth/static/js/
 /at_the_airport.json
 /at_the_arport.mp3
 output.log

@@ -16,7 +16,7 @@ class MediaArtifactContractTests(unittest.TestCase):
     def test_shared_golden_fixture_decodes_and_is_stateless(self) -> None:
         fixture = (
             ROOT
-            / "flashcards"
+            / "media-reviewer"
             / "shared"
             / "src"
             / "test"
@@ -47,7 +47,7 @@ class MediaArtifactContractTests(unittest.TestCase):
     def test_nullable_fields_may_be_omitted(self) -> None:
         fixture = (
             ROOT
-            / "flashcards"
+            / "media-reviewer"
             / "shared"
             / "src"
             / "test"

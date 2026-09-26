@@ -40,7 +40,7 @@ class ServerModule(config: Config, ws: WsModule):
       case req @ GET -> Root / "data" / "audio" / filename =>
         println("Serving audio")
         StaticFile
-          .fromPath(Fs2Path(s"./data/raw_audio/$filename"), Some(req))
+          .fromPath(Fs2Path(s"../data/raw_audio/$filename"), Some(req))
           .getOrElseF(NotFound())
           .map(x =>
             x.putHeaders(
