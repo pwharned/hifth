@@ -7,20 +7,30 @@ import com.sun.net.httpserver.{HttpExchange, HttpServer}
 
 import java.io.IOException
 import java.net.{InetSocketAddress, URI}
-import java.net.http.{HttpClient, WebSocket}
+import java.net.http.{
+  HttpClient,
+  HttpHeaders,
+  HttpRequest,
+  HttpResponse,
+  WebSocket,
+  WebSocketHandshakeException
+}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.time.Duration
+import java.util.Optional
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 import java.util.concurrent.{
   CancellationException,
   CompletableFuture,
+  CompletionException,
   CopyOnWriteArrayList,
   CountDownLatch,
   ExecutionException,
   Executors,
   TimeUnit
 }
+import javax.net.ssl.SSLSession
 import scala.jdk.CollectionConverters.*
 
 private object GoogleClientTestSupport:
@@ -125,8 +135,10 @@ private object GoogleClientTestSupport:
         case _: InterruptedException => Thread.currentThread().interrupt()
       finally exchange.close()
 
-  final class RecordingMicrosoftTransport(result: IO[Array[Byte]])
+  final class RecordingMicrosoftTransport(respond: MicrosoftSpeechRequest => IO[Array[Byte]])
       extends MicrosoftSpeechTransport:
+    def this(result: IO[Array[Byte]]) = this(_ => result)
+
     private val recorded = new CopyOnWriteArrayList[MicrosoftSpeechRequest]()
 
     def requests: List[MicrosoftSpeechRequest] = recorded.asScala.toList
@@ -135,7 +147,25 @@ private object GoogleClientTestSupport:
       IO.delay:
         recorded.add(request)
         ()
-      .flatMap(_ => result)
+      .flatMap(_ => respond(request))
+
+  final class FakeHandshakeResponse(status: Int, date: Option[String])
+      extends HttpResponse[Unit]:
+    private val responseHeaders =
+      val values = date.fold(Map.empty[String, List[String]])(value => Map("Date" -> List(value)))
+      HttpHeaders.of(
+        values.view.mapValues(_.asJava).toMap.asJava,
+        (_, _) => true
+      )
+
+    override def statusCode(): Int = status
+    override def request(): HttpRequest = null
+    override def previousResponse(): Optional[HttpResponse[Unit]] = Optional.empty()
+    override def headers(): HttpHeaders = responseHeaders
+    override def body(): Unit = ()
+    override def sslSession(): Optional[SSLSession] = Optional.empty()
+    override def uri(): URI = URI.create("https://speech.platform.bing.com/")
+    override def version(): HttpClient.Version = HttpClient.Version.HTTP_1_1
 
   final class FakeWebSocket(pauseFirstText: Boolean = false) extends WebSocket:
     private val texts = new CopyOnWriteArrayList[(String, Boolean)]()
@@ -246,6 +276,17 @@ private object GoogleClientTestSupport:
     val headerBytes = header.getBytes(StandardCharsets.UTF_8)
     Array(((headerBytes.length >>> 8) & 0xff).toByte, (headerBytes.length & 0xff).toByte) ++
       headerBytes ++ payload
+
+  def audioFrame(payload: Array[Byte]): Array[Byte] =
+    binaryFrame(
+      "X-RequestId:test\r\nContent-Type:audio/mpeg\r\nPath:audio\r\n",
+      payload
+    )
+
+  def terminalAudioFrame: Array[Byte] = binaryFrame("Path:audio\r\n", Array.emptyByteArray)
+
+  def textFrame(path: String, data: String = ""): String =
+    s"X-RequestId:test\r\nPath:$path\r\n\r\n$data"
 
   def listenerRequest(
       messages: Vector[String] = Vector("speech.config", "ssml"),
@@ -598,55 +639,175 @@ class GoogleClientSuite extends munit.FunSuite:
       URI.create("https://translate.googleapis.com/translate_tts")
     )
 
-  test("Microsoft Edge protocol primitives match Clausula and parse audio framing"):
-    val epochMillis = 1704164645678L
+  test("Microsoft text preparation sanitizes, escapes, and splits like Clausula"):
+    val input =
+      "a\u0000b\u0009c\u000ad\u000be\u000cf\u000dg\u001fh\ud800i\ufffej & <tag> >"
+    val sanitized = "a b\tc\nd e f\rg h i j & <tag> >"
+    assertEquals(MicrosoftSpeechProtocol.sanitizeXmlText(input), sanitized)
+    assertEquals(
+      MicrosoftSpeechProtocol.escapeXml(sanitized),
+      "a b\tc\nd e f\rg h i j &amp; &lt;tag&gt; &gt;"
+    )
+
+    assertEquals(
+      MicrosoftSpeechProtocol.splitEscapedText("alpha\nbravo charlie delta", 20),
+      Right(Vector("alpha", "bravo charlie delta"))
+    )
+    assertEquals(
+      MicrosoftSpeechProtocol.splitEscapedText("alpha bravo charlie delta", 20),
+      Right(Vector("alpha bravo charlie", "delta"))
+    )
+
+    val escaped = MicrosoftSpeechProtocol.escapeXml(
+      "\u0633\u0644\u0627\u0645\ud83d\ude00&<\u062f\u0648\u0633\u062a>" +
+        "\u0633\u0644\u0627\u0645\ud83d\ude00&"
+    )
+    val chunks = MicrosoftSpeechProtocol.splitEscapedText(escaped, 16)
+    assertEquals(
+      chunks,
+      Right(
+        Vector(
+          "\u0633\u0644\u0627\u0645\ud83d\ude00",
+          "&amp;&lt;\u062f\u0648\u0633",
+          "\u062a&gt;\u0633\u0644\u0627\u0645",
+          "\ud83d\ude00&amp;"
+        )
+      )
+    )
+    chunks.toOption.get.foreach: chunk =>
+      assert(chunk.getBytes(StandardCharsets.UTF_8).length <= 16)
+
+    val noWhitespace = MicrosoftSpeechProtocol.splitEscapedText("a" * 5000)
+    assertEquals(
+      noWhitespace.map(_.map(_.getBytes(StandardCharsets.UTF_8).length)),
+      Right(Vector(4096, 904))
+    )
+    assertEquals(noWhitespace.map(_.mkString), Right("a" * 5000))
+    assert(MicrosoftSpeechProtocol.splitEscapedText("&amp;", 4).isLeft)
+
+    val defaultChunks = MicrosoftSpeechProtocol.prepareText(
+      "\u0633\u0644\u0627\u0645 \ud83d\ude00 & " * 1000
+    )
+    assertEquals(
+      defaultChunks.map(_.map(_.getBytes(StandardCharsets.UTF_8).length)),
+      Right(Vector(4093, 4094, 4090, 4093, 3625))
+    )
+    assert(defaultChunks.toOption.get.forall(_.getBytes(StandardCharsets.UTF_8).length <= 4096))
+
+  test("Microsoft Edge protocol vectors and frames exactly match Clausula"):
     assertEquals(MicrosoftSpeechProtocol.SecMsGecVersion, "1-143.0.3650.75")
     assertEquals(MicrosoftSpeechProtocol.TrustedClientToken, "6A5AA1D4EAFF4E9FB37E23D68491D6F4")
     assertEquals(MicrosoftSpeechProtocol.Voice, "fa-IR-DilaraNeural")
     assertEquals(MicrosoftSpeechProtocol.OutputFormat, "audio-24khz-48kbitrate-mono-mp3")
-    assertEquals(
-      MicrosoftSpeechProtocol.secMsGec(epochMillis),
-      "BD721EDF522D70BE4575BAABDC730E8B6AE84F3A5FB57B5B31FE70FC89384262"
+    assertEquals(MicrosoftSpeechProtocol.MaxTextChunkBytes, 4096)
+
+    val gecVectors = Vector(
+      (0L, "116444736000000000", "7ECB79D14E3AA576D2D79E6D487A1388156D91E614B1BE11C64226A29BC8DD8C"),
+      (299999L, "116444736000000000", "7ECB79D14E3AA576D2D79E6D487A1388156D91E614B1BE11C64226A29BC8DD8C"),
+      (300000L, "116444739000000000", "ED93F5AAE06C01D88654A1831CAC424F7BE4878E9D5850F7F66DDCBDD7ED95B9"),
+      (1735689599999L, "133801629000000000", "4EDD3A5D81F2B34A223CE94402D9B089EE5A3A7658BEB984F5FF288C8F294F61"),
+      (1735689600000L, "133801632000000000", "B0EDD22C7C09868E2F24C10264A8A3EB877773A7B6040B68AFA4FBCBABEA0238")
     )
-    assertEquals(MicrosoftSpeechProtocol.timestamp(epochMillis), "2024-01-02T03:04:05.678Z")
+    gecVectors.foreach: (now, ticks, hash) =>
+      assertEquals(MicrosoftSpeechProtocol.filetimeTicks(now).toString, ticks)
+      assertEquals(MicrosoftSpeechProtocol.secMsGec(now), hash)
+    assertEquals(
+      MicrosoftSpeechProtocol.filetimeTicks(299999L, 1L),
+      MicrosoftSpeechProtocol.filetimeTicks(300000L)
+    )
+    assertEquals(
+      MicrosoftSpeechProtocol.filetimeTicks(300001L, -2L),
+      MicrosoftSpeechProtocol.filetimeTicks(0L)
+    )
     assertEquals(
       MicrosoftSpeechProtocol.muid(Array.tabulate[Byte](16)(_.toByte)),
       "000102030405060708090A0B0C0D0E0F"
     )
 
-    val config = MicrosoftSpeechProtocol.speechConfig("2024-01-02T03:04:05.678Z")
-    assertEquals(
-      config,
-      "X-Timestamp:2024-01-02T03:04:05.678Z\r\n" +
+    val epochMillis = 1735787045000L
+    val timestamp = "Thu Jan 02 2025 03:04:05 GMT+0000 (Coordinated Universal Time)"
+    assertEquals(MicrosoftSpeechProtocol.timestamp(epochMillis), timestamp)
+    val config = MicrosoftSpeechProtocol.speechConfig(timestamp)
+    val expectedConfig =
+      s"X-Timestamp:$timestamp\r\n" +
         "Content-Type:application/json; charset=utf-8\r\n" +
         "Path:speech.config\r\n\r\n" +
         "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
-        "{\"sentenceBoundaryEnabled\":false,\"wordBoundaryEnabled\":true}," +
-        "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}"
+        "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"true\"}," +
+        "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
+    assertEquals(
+      config.getBytes(StandardCharsets.UTF_8).toSeq,
+      expectedConfig.getBytes(StandardCharsets.UTF_8).toSeq
     )
 
     val ssml = MicrosoftSpeechProtocol.ssml(
-      "<&>\"'",
-      "abc123",
-      "2024-01-02T03:04:05.678Z"
+      "\u0633\u0644\u0627\u0645 &amp; &lt;x&gt;",
+      "0123456789abcdef0123456789abcdef",
+      timestamp
     )
-    assertEquals(
-      ssml,
-      "X-RequestId:abc123\r\n" +
+    val expectedSsml =
+      "X-RequestId:0123456789abcdef0123456789abcdef\r\n" +
         "Content-Type:application/ssml+xml\r\n" +
-        "X-Timestamp:2024-01-02T03:04:05.678ZZ\r\n" +
+        s"X-Timestamp:${timestamp}Z\r\n" +
         "Path:ssml\r\n\r\n" +
-        "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='fa'>" +
+        "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
         "<voice name='fa-IR-DilaraNeural'>" +
-        "<prosody pitch='+0Hz' rate='+0%' volume='+0%'>&lt;&amp;&gt;&quot;&apos;" +
-        "</prosody></voice></speak>"
+        "<prosody pitch='+0Hz' rate='+0%' volume='+0%'>" +
+        "\u0633\u0644\u0627\u0645 &amp; &lt;x&gt;</prosody></voice></speak>"
+    assertEquals(
+      ssml.getBytes(StandardCharsets.UTF_8).toSeq,
+      expectedSsml.getBytes(StandardCharsets.UTF_8).toSeq
     )
 
     val audio = Array[Byte](1, 2, 3)
-    val parsed = MicrosoftSpeechProtocol.parseBinaryFrame(binaryFrame("Path:audio\r\n", audio))
-    assertEquals(parsed.map(_.header), Right("Path:audio\r\n"))
+    val parsed = MicrosoftSpeechProtocol.parseBinaryFrame(audioFrame(audio))
+    assertEquals(
+      parsed.map(_.header),
+      Right("X-RequestId:test\r\nContent-Type:audio/mpeg\r\nPath:audio\r\n")
+    )
     assertEquals(parsed.map(_.payload.toSeq), Right(audio.toSeq))
+    assertEquals(parsed.map(_.terminal), Right(false))
+    assertEquals(MicrosoftSpeechProtocol.parseBinaryFrame(terminalAudioFrame).map(_.terminal), Right(true))
     assert(MicrosoftSpeechProtocol.parseBinaryFrame(Array[Byte](0, 5, 1)).isLeft)
+    assert(MicrosoftSpeechProtocol.parseBinaryFrame(binaryFrame("Path:nope\r\n", audio)).isLeft)
+    assert(
+      MicrosoftSpeechProtocol.parseBinaryFrame(binaryFrame("Path:audio\r\n", audio)).isLeft
+    )
+    assert(MicrosoftSpeechProtocol.parseTextFrame("Path:turn.end\n\n").isLeft)
+    assertEquals(
+      MicrosoftSpeechProtocol.parseTextFrame(textFrame("turn.end")).map(_.path),
+      Right("turn.end")
+    )
+
+    assertEquals(
+      MicrosoftSpeechProtocol.uri(
+        GoogleClient.LiveMicrosoftSpeechEndpoint,
+        "A" * 64,
+        "0123456789abcdef0123456789abcdef"
+      ).toASCIIString,
+      "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1" +
+        "?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4" +
+        "&ConnectionId=0123456789abcdef0123456789abcdef" +
+        s"&Sec-MS-GEC=${"A" * 64}&Sec-MS-GEC-Version=1-143.0.3650.75"
+    )
+
+  test("JDK transport exposes handshake status and Date through completion wrappers"):
+    val responseDate = "Thu, 01 Jan 1970 00:05:00 GMT"
+    val handshake = new WebSocketHandshakeException(
+      new FakeHandshakeResponse(403, Some(responseDate))
+    )
+    val normalized = JdkMicrosoftSpeechTransport
+      .normalizeError(new CompletionException(handshake))
+      .asInstanceOf[MicrosoftHandshakeError]
+
+    assertEquals(normalized.status, 403)
+    assertEquals(normalized.statusCode, 403)
+    assertEquals(normalized.date, Some(responseDate))
+    assertEquals(normalized.responseDate, Some(responseDate))
+    assert(normalized.getCause eq handshake)
+
+    val ordinary = new IOException("ordinary")
+    assert(JdkMicrosoftSpeechTransport.normalizeError(new CompletionException(ordinary)) eq ordinary)
 
   test("Microsoft listener sends commands in order and requests inbound demand on open"):
     val request = listenerRequest(messages = Vector("config-command", "ssml-command"))
@@ -674,39 +835,50 @@ class GoogleClientSuite extends munit.FunSuite:
     val socket = new FakeWebSocket()
     listener.onOpen(socket)
 
-    val first = binaryFrame("X-RequestId:one\r\nPath:audio\r\n", Array[Byte](1, 2))
-    val second = binaryFrame("X-RequestId:one\r\nPath:audio\r\n", Array[Byte](3, 4, 5))
+    val first = audioFrame(Array[Byte](1, 2))
+    val second = audioFrame(Array[Byte](3, 4, 5))
 
     listener.onBinary(socket, ByteBuffer.wrap(first.take(3)), last = false)
     assert(!listener.result.isDone)
     listener.onBinary(socket, ByteBuffer.wrap(first.drop(3)), last = true)
     listener.onBinary(socket, ByteBuffer.wrap(second.dropRight(1)), last = false)
     listener.onBinary(socket, ByteBuffer.wrap(second.takeRight(1)), last = true)
+    listener.onBinary(socket, ByteBuffer.wrap(terminalAudioFrame), last = true)
     assert(!listener.result.isDone)
 
-    listener.onText(socket, "Path:turn.", last = false)
+    val turnEnd = textFrame("turn.end")
+    listener.onText(socket, turnEnd.dropRight(5), last = false)
     assert(!listener.result.isDone)
-    listener.onText(socket, "end\r\n", last = true)
+    listener.onText(socket, turnEnd.takeRight(5), last = true)
 
     assertEquals(listener.result.get(1, TimeUnit.SECONDS).toSeq, Seq[Byte](1, 2, 3, 4, 5))
     assertEquals(socket.closeRequests, Vector(WebSocket.NORMAL_CLOSURE -> ""))
     assertEquals(socket.abortCalls, 0)
-    assertEquals(socket.requested, 6L)
-    assertEquals(socket.requestCalls, 6)
+    assertEquals(socket.requested, 7L)
+    assertEquals(socket.requestCalls, 7)
 
   test("Microsoft listener completes oversize, WebSocket error, send error, and early close failures"):
+    val noAudioListener = new MicrosoftSpeechListener(listenerRequest())
+    val noAudioSocket = new FakeWebSocket()
+    noAudioListener.onOpen(noAudioSocket)
+    noAudioListener.onText(noAudioSocket, textFrame("turn.end"), last = true)
+    val noAudio = completedFailure(noAudioListener.result)
+    assert(noAudio.getMessage.contains("empty audio"), noAudio.getMessage)
+    assert(!noAudioListener.hasReceivedAudio)
+    assertEquals(noAudioSocket.abortCalls, 1)
+
     val oversizeListener = new MicrosoftSpeechListener(listenerRequest(maxAudioBytes = 3))
     val oversizeSocket = new FakeWebSocket()
     oversizeListener.onOpen(oversizeSocket)
     oversizeListener.onBinary(
       oversizeSocket,
-      ByteBuffer.wrap(binaryFrame("Path:audio\r\n", Array[Byte](1, 2))),
+      ByteBuffer.wrap(audioFrame(Array[Byte](1, 2))),
       last = true
     )
     assert(!oversizeListener.result.isDone)
     oversizeListener.onBinary(
       oversizeSocket,
-      ByteBuffer.wrap(binaryFrame("Path:audio\r\n", Array[Byte](3, 4))),
+      ByteBuffer.wrap(audioFrame(Array[Byte](3, 4))),
       last = true
     )
     val oversize = completedFailure(oversizeListener.result)
@@ -734,9 +906,10 @@ class GoogleClientSuite extends munit.FunSuite:
     closedListener.onOpen(closedSocket)
     closedListener.onBinary(
       closedSocket,
-      ByteBuffer.wrap(binaryFrame("Path:audio\r\n", Array[Byte](9))),
+      ByteBuffer.wrap(audioFrame(Array[Byte](9))),
       last = true
     )
+    assert(closedListener.hasReceivedAudio)
     closedListener.onClose(closedSocket, 1001, "early")
     val closed = completedFailure(closedListener.result)
     assert(closed.getMessage.contains("WebSocket closed: 1001 early"), closed.getMessage)
@@ -751,7 +924,7 @@ class GoogleClientSuite extends munit.FunSuite:
     assert(completedFailure(openListener.result).isInstanceOf[CancellationException])
     assertEquals(openSocket.abortCalls, 1)
     val demandAtCancellation = openSocket.requested
-    openListener.onText(openSocket, "Path:turn.end\r\n", last = true)
+    openListener.onText(openSocket, textFrame("turn.end"), last = true)
     openListener.abort()
     assertEquals(openSocket.abortCalls, 1)
     assertEquals(openSocket.requested, demandAtCancellation)
@@ -765,6 +938,88 @@ class GoogleClientSuite extends munit.FunSuite:
     assertEquals(laterSocket.abortCalls, 1)
     assertEquals(laterSocket.sentTexts, Vector.empty)
     assertEquals(laterSocket.requested, 0L)
+
+  test("Persian chunks use fresh sequential turns and concatenate their audio"):
+    val turnIndex = new AtomicInteger(0)
+    val transport = new RecordingMicrosoftTransport(_ =>
+      turnIndex.getAndIncrement() match
+        case 0 => IO.pure(Array[Byte](1, 2))
+        case 1 => IO.pure(Array[Byte](3, 4, 5))
+        case other => IO.raiseError(new IllegalStateException(s"unexpected turn $other"))
+    )
+    val translationIndex = new AtomicInteger(0)
+    val idIndex = new AtomicInteger(0)
+    val ids = Vector("1" * 32, "2" * 32, "3" * 32, "4" * 32)
+    val muidIndex = new AtomicInteger(0)
+    val sentence = "a" * 5000
+
+    withServer(
+      request =>
+        request.path match
+          case "/translate" if translationIndex.getAndIncrement() == 0 =>
+            StubResponse.batch(batchexecute(List("sentence"), Some("fa")))
+          case "/translate" =>
+            StubResponse.batch(batchexecute(List(s"$OpenMarker a $CloseMarker"), Some("fa")))
+          case _ => StubResponse.text("unexpected", 500)
+    ): server =>
+      val result = microsoftClient(
+        server,
+        transport,
+        randomId = () => ids(idIndex.getAndIncrement()),
+        muidBytes = () =>
+          val value = muidIndex.getAndIncrement().toByte
+          Array.fill[Byte](16)(value)
+      ).prepare(sentence, SelectionSpan(0, 1), "fa").unsafeRunSync()
+
+      assertEquals(result.audioBytes.toSeq, Seq[Byte](1, 2, 3, 4, 5))
+      assertEquals(transport.requests.size, 2)
+      val first = transport.requests(0)
+      val second = transport.requests(1)
+      assert(first.uri.toASCIIString.contains(s"ConnectionId=${"1" * 32}"))
+      assert(second.uri.toASCIIString.contains(s"ConnectionId=${"3" * 32}"))
+      assert(first.messages(1).contains(s"X-RequestId:${"2" * 32}"))
+      assert(second.messages(1).contains(s"X-RequestId:${"4" * 32}"))
+      assert(first.messages(1).contains(s">${"a" * 4096}</prosody>"))
+      assert(second.messages(1).contains(s">${"a" * 904}</prosody>"))
+      assertEquals(first.headers.last, "Cookie" -> s"muid=${"00" * 16};")
+      assertEquals(second.headers.last, "Cookie" -> s"muid=${"01" * 16};")
+      assertEquals(first.maxAudioBytes, GoogleClient.MaxAudioBytes)
+      assertEquals(second.maxAudioBytes, GoogleClient.MaxAudioBytes - 2)
+
+  test("Persian multi-turn synthesis obeys the overall deadline and cancels the active turn"):
+    val turnIndex = new AtomicInteger(0)
+    val cancellations = new AtomicInteger(0)
+    val transport = new RecordingMicrosoftTransport(_ =>
+      if turnIndex.getAndIncrement() == 0 then IO.pure(Array[Byte](1))
+      else
+        IO.never[Array[Byte]].onCancel(
+          IO.delay:
+            cancellations.incrementAndGet()
+            ()
+        )
+    )
+    val translationIndex = new AtomicInteger(0)
+
+    withServer(
+      request =>
+        request.path match
+          case "/translate" if translationIndex.getAndIncrement() == 0 =>
+            StubResponse.batch(batchexecute(List("sentence"), Some("fa")))
+          case "/translate" =>
+            StubResponse.batch(batchexecute(List(s"$OpenMarker a $CloseMarker"), Some("fa")))
+          case _ => StubResponse.text("unexpected", 500)
+    ): server =>
+      val error = intercept[IllegalStateException]:
+        microsoftClient(
+          server,
+          transport,
+          timeout = Duration.ofSeconds(5),
+          overallTimeout = Duration.ofSeconds(1)
+        ).prepare("a" * 5000, SelectionSpan(0, 1), "fa").unsafeRunSync()
+
+      assert(error.getMessage.contains("preparation timed out"), error.getMessage)
+      assertEquals(transport.requests.size, 2)
+      assertEquals(cancellations.get(), 1)
 
   test("fa uses the injectable Microsoft transport with deterministic IDs, cookie, and messages"):
     val audio = Array[Byte](4, 5, 6)
@@ -801,9 +1056,9 @@ class GoogleClientSuite extends munit.FunSuite:
         request.uri.toASCIIString,
         "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1" +
           "?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4" +
+          "&ConnectionId=11111111111111111111111111111111" +
           "&Sec-MS-GEC=BD721EDF522D70BE4575BAABDC730E8B6AE84F3A5FB57B5B31FE70FC89384262" +
-          "&Sec-MS-GEC-Version=1-143.0.3650.75" +
-          "&ConnectionId=11111111111111111111111111111111"
+          "&Sec-MS-GEC-Version=1-143.0.3650.75"
       )
       assertEquals(
         request.headers,
@@ -825,8 +1080,78 @@ class GoogleClientSuite extends munit.FunSuite:
       assert(request.messages.head.contains("Path:speech.config"))
       assert(request.messages.head.contains("audio-24khz-48kbitrate-mono-mp3"))
       assert(request.messages(1).contains("X-RequestId:22222222222222222222222222222222"))
+      assert(request.messages(1).contains("xml:lang='en-US'"))
       assert(request.messages(1).contains("<voice name='fa-IR-DilaraNeural'>"))
       assert(request.messages(1).contains("salaam &lt;&amp;&gt;"))
+
+  test("a first pre-audio 403 uses server Date skew and retries the chunk with fresh identity"):
+    val responseDate = "Thu, 01 Jan 1970 00:05:00 GMT"
+    val (result, requests) = runFaResponses(
+      Vector(
+        Left(new MicrosoftHandshakeError(403, Some(responseDate))),
+        Right(Array[Byte](7, 8))
+      ),
+      nowMillis = 0L
+    )
+
+    assertEquals(result.toOption.get.audioBytes.toSeq, Seq[Byte](7, 8))
+    assertEquals(requests.size, 2)
+    assert(
+      requests(0).uri.toASCIIString.contains(
+        "Sec-MS-GEC=7ECB79D14E3AA576D2D79E6D487A1388156D91E614B1BE11C64226A29BC8DD8C"
+      )
+    )
+    assert(
+      requests(1).uri.toASCIIString.contains(
+        "Sec-MS-GEC=ED93F5AAE06C01D88654A1831CAC424F7BE4878E9D5850F7F66DDCBDD7ED95B9"
+      )
+    )
+    assert(requests(0).uri != requests(1).uri)
+    assert(requests(0).headers.last != requests(1).headers.last)
+    assert(requests(0).messages(1) != requests(1).messages(1))
+
+  test("403 retry rejects missing or malformed Date, repeat 403, non-403, and post-audio errors"):
+    val validDate = "Thu, 01 Jan 1970 00:05:00 GMT"
+
+    val (missingResult, missingRequests) = runFaResponses(
+      Vector(Left(new MicrosoftHandshakeError(403, None))),
+      nowMillis = 0L
+    )
+    assert(missingResult.left.toOption.get.getMessage.contains("did not include a Date"))
+    assertEquals(missingRequests.size, 1)
+
+    val (malformedResult, malformedRequests) = runFaResponses(
+      Vector(Left(new MicrosoftHandshakeError(403, Some("not-a-date")))),
+      nowMillis = 0L
+    )
+    assert(malformedResult.left.toOption.get.getMessage.contains("invalid Date"))
+    assertEquals(malformedRequests.size, 1)
+
+    val second403 = new MicrosoftHandshakeError(403, Some(validDate))
+    val (secondResult, secondRequests) = runFaResponses(
+      Vector(
+        Left(new MicrosoftHandshakeError(403, Some(validDate))),
+        Left(second403)
+      ),
+      nowMillis = 0L
+    )
+    assert(secondResult.left.toOption.get eq second403)
+    assertEquals(secondRequests.size, 2)
+
+    val non403 = new MicrosoftHandshakeError(429, Some(validDate))
+    val (non403Result, non403Requests) = runFaResponses(Vector(Left(non403)), nowMillis = 0L)
+    assert(non403Result.left.toOption.get eq non403)
+    assertEquals(non403Requests.size, 1)
+
+    val afterAudio = new MicrosoftHandshakeError(
+      403,
+      Some(validDate),
+      audioReceived = true
+    )
+    val (afterAudioResult, afterAudioRequests) =
+      runFaResponses(Vector(Left(afterAudio)), nowMillis = 0L)
+    assert(afterAudioResult.left.toOption.get eq afterAudio)
+    assertEquals(afterAudioRequests.size, 1)
 
   test("fa transport timeout completes instead of hanging"):
     val transport = new RecordingMicrosoftTransport(IO.never[Array[Byte]])
@@ -847,6 +1172,40 @@ class GoogleClientSuite extends munit.FunSuite:
           .unsafeRunSync()
       assert(error.getMessage.contains("Microsoft speech request timed out"), error.getMessage)
       assertEquals(transport.requests.size, 1)
+
+  private def runFaResponses(
+      responses: Vector[Either[Throwable, Array[Byte]]],
+      nowMillis: Long
+  ): (Either[Throwable, GooglePreparation], List[MicrosoftSpeechRequest]) =
+    val responseIndex = new AtomicInteger(0)
+    val transport = new RecordingMicrosoftTransport(_ =>
+      responses.lift(responseIndex.getAndIncrement()) match
+        case Some(response) => IO.fromEither(response)
+        case None => IO.raiseError(new IllegalStateException("unexpected Microsoft speech request"))
+    )
+    val translationIndex = new AtomicInteger(0)
+    val idIndex = new AtomicInteger(1)
+    val muidIndex = new AtomicInteger(0)
+
+    withServer(
+      request =>
+        request.path match
+          case "/translate" if translationIndex.getAndIncrement() == 0 =>
+            StubResponse.batch(batchexecute(List("sentence"), Some("fa")))
+          case "/translate" =>
+            StubResponse.batch(batchexecute(List(s"$OpenMarker x $CloseMarker"), Some("fa")))
+          case _ => StubResponse.text("unexpected", 500)
+    ): server =>
+      val result = microsoftClient(
+        server,
+        transport,
+        now = () => nowMillis,
+        randomId = () => f"${idIndex.getAndIncrement()}%032x",
+        muidBytes = () =>
+          val value = muidIndex.getAndIncrement().toByte
+          Array.fill[Byte](16)(value)
+      ).prepare("x", SelectionSpan(0, 1), "fa").attempt.unsafeRunSync()
+      result -> transport.requests
 
   private def completedFailure(future: CompletableFuture[?]): Throwable =
     try

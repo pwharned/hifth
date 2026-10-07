@@ -22,4 +22,6 @@ than a supported Google API. It posts `MkEWBc` requests to Google Translate's
 `batchexecute` endpoint, retries a 400 response with the returned XSRF token,
 and uses the undocumented `translate_tts` endpoint for whole-sentence audio.
 Persian (`fa`) follows Clausula's Microsoft Edge consumer-speech WebSocket path.
-These private endpoints can change without notice.
+That adapter is pinned to the `edge-tts` 7.2.8 protocol profile, including
+4096-byte escaped-text turns and 403 clock-skew recovery. These private endpoints
+can change without notice.

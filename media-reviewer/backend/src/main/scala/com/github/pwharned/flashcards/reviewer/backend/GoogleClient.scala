@@ -6,14 +6,28 @@ import com.github.pwharned.flashcards.shared.domain.{Enrichment, SelectionSpan}
 
 import java.io.{ByteArrayOutputStream, IOException}
 import java.net.URI
-import java.net.http.{HttpClient, HttpRequest, HttpResponse, HttpTimeoutException, WebSocket}
+import java.net.http.{
+  HttpClient,
+  HttpRequest,
+  HttpResponse,
+  HttpTimeoutException,
+  WebSocket,
+  WebSocketHandshakeException
+}
 import java.nio.{ByteBuffer, CharBuffer}
 import java.nio.charset.{CodingErrorAction, StandardCharsets}
 import java.security.{MessageDigest, SecureRandom}
 import java.time.{Duration, Instant, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import java.util.{HexFormat, Locale, UUID}
-import java.util.concurrent.{CancellationException, CompletableFuture, CompletionStage, Flow}
+import java.util.concurrent.{
+  CancellationException,
+  CompletableFuture,
+  CompletionException,
+  CompletionStage,
+  ExecutionException,
+  Flow
+}
 import scala.concurrent.duration.DurationLong
 
 private[backend] trait GoogleGateway:
@@ -53,6 +67,18 @@ private[backend] final case class MicrosoftSpeechRequest(
 
 private[backend] trait MicrosoftSpeechTransport:
   def synthesize(request: MicrosoftSpeechRequest): IO[Array[Byte]]
+
+private[backend] final class MicrosoftHandshakeError(
+    val status: Int,
+    val date: Option[String],
+    cause: Throwable = null,
+    val audioReceived: Boolean = false
+) extends IOException(
+      s"Microsoft speech WebSocket handshake failed with HTTP status $status",
+      cause
+    ):
+  val statusCode: Int = status
+  val responseDate: Option[String] = date
 
 private[backend] object GoogleClient:
   private[backend] val LiveTranslationEndpoint: URI =
@@ -367,23 +393,48 @@ private[backend] final class GoogleClient private (
         validateAudio(bytes, "Google speech")
 
   private def synthesizePersian(sentence: String): IO[Array[Byte]] =
-    val secMsGec = MicrosoftSpeechProtocol.secMsGec(currentTimeMillis())
-    val connectionId = randomId().replace("-", "")
-    val muid = MicrosoftSpeechProtocol.muid(randomMuidBytes())
-    val configTimestamp = MicrosoftSpeechProtocol.timestamp(currentTimeMillis())
-    val requestId = randomId().replace("-", "")
-    val ssmlTimestamp = MicrosoftSpeechProtocol.timestamp(currentTimeMillis())
-    val request = MicrosoftSpeechRequest(
-      uri = MicrosoftSpeechProtocol.uri(LiveMicrosoftSpeechEndpoint, secMsGec, connectionId),
-      headers = MicrosoftSpeechProtocol.headers(muid),
-      messages = Vector(
-        MicrosoftSpeechProtocol.speechConfig(configTimestamp),
-        MicrosoftSpeechProtocol.ssml(sentence, requestId, ssmlTimestamp)
-      ),
-      requestTimeout = requestTimeout,
-      maxAudioBytes = MaxAudioBytes
-    )
+    IO.fromEither(
+      MicrosoftSpeechProtocol.prepareText(sentence).left.map: message =>
+        new IllegalArgumentException(s"Microsoft speech text is invalid: $message")
+    ).flatMap: chunks =>
+      if chunks.isEmpty then
+        IO.raiseError(new IllegalArgumentException("Microsoft speech text is empty after sanitization"))
+      else
+        IO.defer:
+          val output = new ByteArrayOutputStream()
 
+          def synthesizeChunk(index: Int, clockSkewMillis: Long): IO[Array[Byte]] =
+            if index >= chunks.length then IO.delay(output.toByteArray)
+            else
+              val remaining = MaxAudioBytes - output.size()
+              if remaining <= 0 then
+                IO.raiseError(
+                  new IllegalStateException("Microsoft speech audio exceeds the 10 MiB limit")
+                )
+              else
+                synthesizeMicrosoftTurn(
+                  chunks(index),
+                  remaining,
+                  clockSkewMillis,
+                  allowClockRetry = true
+                ).flatMap: (bytes, updatedClockSkewMillis) =>
+                  if bytes.length > remaining then
+                    IO.raiseError(
+                      new IllegalStateException("Microsoft speech audio exceeds the 10 MiB limit")
+                    )
+                  else
+                    IO.delay(output.write(bytes)).flatMap: _ =>
+                      synthesizeChunk(index + 1, updatedClockSkewMillis)
+
+          synthesizeChunk(0, 0L).flatMap(bytes => validateAudio(bytes, "Microsoft speech"))
+
+  private def synthesizeMicrosoftTurn(
+      escapedText: String,
+      maxAudioBytes: Int,
+      clockSkewMillis: Long,
+      allowClockRetry: Boolean
+  ): IO[(Array[Byte], Long)] =
+    val request = microsoftRequest(escapedText, maxAudioBytes, clockSkewMillis)
     microsoftTransport
       .synthesize(request)
       .timeoutTo(
@@ -394,7 +445,64 @@ private[backend] final class GoogleClient private (
           )
         )
       )
-      .flatMap(bytes => validateAudio(bytes, "Microsoft speech"))
+      .attempt
+      .flatMap:
+        case Right(bytes) =>
+          validateAudio(bytes, "Microsoft speech").map(_ -> clockSkewMillis)
+        case Left(error: MicrosoftHandshakeError)
+            if allowClockRetry && error.status == 403 && !error.audioReceived =>
+          IO.fromEither(clockSkewFromHandshake(error)).flatMap: updatedClockSkewMillis =>
+            synthesizeMicrosoftTurn(
+              escapedText,
+              maxAudioBytes,
+              updatedClockSkewMillis,
+              allowClockRetry = false
+            )
+        case Left(error) => IO.raiseError(error)
+
+  private def microsoftRequest(
+      escapedText: String,
+      maxAudioBytes: Int,
+      clockSkewMillis: Long
+  ): MicrosoftSpeechRequest =
+    val connectionId = randomId().replace("-", "")
+    val requestId = randomId().replace("-", "")
+    val secMsGec = MicrosoftSpeechProtocol.secMsGec(currentTimeMillis(), clockSkewMillis)
+    val muid = MicrosoftSpeechProtocol.muid(randomMuidBytes())
+    val configTimestamp = MicrosoftSpeechProtocol.timestamp(currentTimeMillis())
+    val ssmlTimestamp = MicrosoftSpeechProtocol.timestamp(currentTimeMillis())
+    MicrosoftSpeechRequest(
+      uri = MicrosoftSpeechProtocol.uri(LiveMicrosoftSpeechEndpoint, secMsGec, connectionId),
+      headers = MicrosoftSpeechProtocol.headers(muid),
+      messages = Vector(
+        MicrosoftSpeechProtocol.speechConfig(configTimestamp),
+        MicrosoftSpeechProtocol.ssml(escapedText, requestId, ssmlTimestamp)
+      ),
+      requestTimeout = requestTimeout,
+      maxAudioBytes = maxAudioBytes
+    )
+
+  private def clockSkewFromHandshake(error: MicrosoftHandshakeError): Either[Throwable, Long] =
+    error.date match
+      case None =>
+        Left(
+          new IllegalStateException(
+            "Microsoft speech HTTP 403 response did not include a Date header",
+            error
+          )
+        )
+      case Some(value) =>
+        try
+          val serverTime = Instant.from(DateTimeFormatter.RFC_1123_DATE_TIME.parse(value)).toEpochMilli
+          Right(Math.subtractExact(serverTime, currentTimeMillis()))
+        catch
+          case parseError: RuntimeException =>
+            Left(
+              new IllegalStateException(
+                s"Microsoft speech HTTP 403 response had an invalid Date header: $value",
+                parseError
+              )
+            )
 
   private def validateAudio(bytes: Array[Byte], provider: String): IO[Array[Byte]] =
     if bytes.isEmpty then
@@ -626,29 +734,47 @@ private[backend] object GoogleTranslationRpc:
       s"[[[\"MkEWBc\",${JavaScriptEncoding.jsonString(parameter)},null,\"generic\"]]]"
     s"f.req=${JavaScriptEncoding.encodeURIComponent(rpc)}&"
 
-private[backend] final case class MicrosoftBinaryFrame(header: String, payload: Array[Byte])
+private[backend] final case class MicrosoftBinaryFrame(
+    header: String,
+    payload: Array[Byte],
+    terminal: Boolean
+)
+
+private[backend] final case class MicrosoftTextFrame(
+    headers: Map[String, String],
+    path: String,
+    data: String
+)
 
 private[backend] object MicrosoftSpeechProtocol:
   val SecMsGecVersion = "1-143.0.3650.75"
   val TrustedClientToken = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
   val Voice = "fa-IR-DilaraNeural"
   val OutputFormat = "audio-24khz-48kbitrate-mono-mp3"
+  val MaxTextChunkBytes = 4096
   val BrowserOrigin = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
   val BrowserUserAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
       "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
 
-  private val WindowsEpochSeconds = 11644473600L
-  private val TicksPerSecond = 10000000L
+  private val FiletimeUnixEpochMillis = BigInt("11644473600000")
+  private val GecBucketMillis = BigInt(300000)
   private val TimestampFormatter = DateTimeFormatter
-    .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT)
+    .ofPattern(
+      "EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'",
+      Locale.ENGLISH
+    )
     .withZone(ZoneOffset.UTC)
 
-  def secMsGec(epochMillis: Long, clockSkewSeconds: Long = 0L): String =
-    val epochSeconds = Math.floorDiv(epochMillis, 1000L) + clockSkewSeconds
-    val intervalSeconds =
-      Math.floorDiv(epochSeconds + WindowsEpochSeconds, 300L) * 300L
-    val ticks = intervalSeconds * TicksPerSecond
+  def filetimeTicks(epochMillis: Long, clockSkewMillis: Long = 0L): BigInt =
+    val adjustedMillis = BigInt(epochMillis) + BigInt(clockSkewMillis)
+    val rawRemainder = adjustedMillis % GecBucketMillis
+    val remainder = if rawRemainder < 0 then rawRemainder + GecBucketMillis else rawRemainder
+    val bucketMillis = adjustedMillis - remainder
+    (bucketMillis + FiletimeUnixEpochMillis) * 10000
+
+  def secMsGec(epochMillis: Long, clockSkewMillis: Long = 0L): String =
+    val ticks = filetimeTicks(epochMillis, clockSkewMillis)
     val source = s"$ticks$TrustedClientToken".getBytes(StandardCharsets.UTF_8)
     HexFormat.of().withUpperCase()
       .formatHex(MessageDigest.getInstance("SHA-256").digest(source))
@@ -661,11 +787,15 @@ private[backend] object MicrosoftSpeechProtocol:
     TimestampFormatter.format(Instant.ofEpochMilli(epochMillis))
 
   def uri(endpoint: URI, secMsGec: String, connectionId: String): URI =
+    require(secMsGec.matches("[0-9A-F]{64}"),
+      "Microsoft speech Sec-MS-GEC must be 64 uppercase hexadecimal characters")
+    require(connectionId.matches("(?i)[0-9a-f]{32}"),
+      "Microsoft speech connection ID must be 32 hexadecimal characters")
     URI.create(
       s"${endpoint.toASCIIString}?TrustedClientToken=$TrustedClientToken" +
+        s"&ConnectionId=$connectionId" +
         s"&Sec-MS-GEC=$secMsGec" +
-        s"&Sec-MS-GEC-Version=$SecMsGecVersion" +
-        s"&ConnectionId=$connectionId"
+        s"&Sec-MS-GEC-Version=$SecMsGecVersion"
     )
 
   def headers(muid: String): Vector[(String, String)] =
@@ -684,45 +814,207 @@ private[backend] object MicrosoftSpeechProtocol:
       "Content-Type:application/json; charset=utf-8\r\n" +
       "Path:speech.config\r\n\r\n" +
       s"{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
-      s"{\"sentenceBoundaryEnabled\":false,\"wordBoundaryEnabled\":true}," +
-      s"\"outputFormat\":\"$OutputFormat\"}}}}"
+      s"{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"true\"}," +
+      s"\"outputFormat\":\"$OutputFormat\"}}}}\r\n"
 
-  def ssml(sentence: String, requestId: String, timestamp: String): String =
+  def ssml(escapedText: String, requestId: String, timestamp: String): String =
+    require(requestId.matches("(?i)[0-9a-f]{32}"),
+      "Microsoft speech request ID must be 32 hexadecimal characters")
     s"X-RequestId:$requestId\r\n" +
       "Content-Type:application/ssml+xml\r\n" +
       s"X-Timestamp:${timestamp}Z\r\n" +
       "Path:ssml\r\n\r\n" +
-      "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='fa'>" +
+      "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
       s"<voice name='$Voice'>" +
       "<prosody pitch='+0Hz' rate='+0%' volume='+0%'>" +
-      escapeXml(sentence) +
+      escapedText +
       "</prosody></voice></speak>"
 
-  def parseBinaryFrame(bytes: Array[Byte]): Either[String, MicrosoftBinaryFrame] =
-    if bytes.length < 2 then Left("Microsoft speech binary frame is missing its header length")
-    else
-      val headerLength = ((bytes(0) & 0xff) << 8) | (bytes(1) & 0xff)
-      if headerLength > bytes.length - 2 then
-        Left("Microsoft speech binary frame has an invalid header length")
-      else
-        decodeUtf8(bytes, 2, headerLength).map: header =>
-          MicrosoftBinaryFrame(header, bytes.slice(headerLength + 2, bytes.length))
+  def sanitizeXmlText(value: String): String =
+    val output = new StringBuilder(value.length)
+    var index = 0
+    while index < value.length do
+      val codePoint = Character.codePointAt(value, index)
+      val width = Character.charCount(codePoint)
+      val valid =
+        codePoint == 0x09 || codePoint == 0x0a || codePoint == 0x0d ||
+          (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+          (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+          (codePoint >= 0x10000 && codePoint <= 0x10ffff)
+      if valid then
+        output.append(value.charAt(index))
+        if width == 2 then output.append(value.charAt(index + 1))
+      else output.append(' ')
+      index += width
+    output.result()
 
-  private def escapeXml(value: String): String =
+  def escapeXml(value: String): String =
     val output = new StringBuilder(value.length)
     value.foreach:
-      case '&'  => output.append("&amp;")
-      case '<'  => output.append("&lt;")
-      case '>'  => output.append("&gt;")
-      case '"'  => output.append("&quot;")
-      case '\'' => output.append("&apos;")
+      case '&' => output.append("&amp;")
+      case '<' => output.append("&lt;")
+      case '>' => output.append("&gt;")
       case character => output.append(character)
     output.result()
+
+  def prepareText(
+      value: String,
+      maxBytes: Int = MaxTextChunkBytes
+  ): Either[String, Vector[String]] =
+    splitEscapedText(escapeXml(sanitizeXmlText(value)), maxBytes)
+
+  def splitEscapedText(
+      value: String,
+      maxBytes: Int = MaxTextChunkBytes
+  ): Either[String, Vector[String]] =
+    if maxBytes <= 0 || maxBytes > MaxTextChunkBytes then
+      Left(s"maxBytes must be between 1 and $MaxTextChunkBytes")
+    else
+      var remaining = value.getBytes(StandardCharsets.UTF_8)
+      val chunks = Vector.newBuilder[String]
+      var failure: Option[String] = None
+
+      while remaining.length > maxBytes && failure.isEmpty do
+        var splitAt = findLastByte(remaining, '\n'.toByte, maxBytes)
+        if splitAt < 0 then splitAt = findLastByte(remaining, ' '.toByte, maxBytes)
+        if splitAt < 0 then splitAt = safeUtf8Split(remaining, maxBytes)
+        splitAt = adjustForXmlEntity(remaining, splitAt)
+
+        if splitAt == 0 && (remaining(0) == '\n'.toByte || remaining(0) == ' '.toByte)
+        then remaining = remaining.drop(1)
+        else if splitAt <= 0 then
+          failure = Some("text cannot be split without breaking UTF-8 or an XML entity")
+        else
+          decodeUtf8(remaining, 0, splitAt, "speech text is not valid UTF-8") match
+            case Left(error) => failure = Some(error)
+            case Right(decoded) =>
+              val chunk = JavaScriptEncoding.trim(decoded)
+              if chunk.nonEmpty then chunks += chunk
+              remaining = remaining.drop(splitAt)
+
+      failure match
+        case Some(error) => Left(error)
+        case None =>
+          decodeUtf8(
+            remaining,
+            0,
+            remaining.length,
+            "speech text is not valid UTF-8"
+          ).map: decoded =>
+            val finalChunk = JavaScriptEncoding.trim(decoded)
+            if finalChunk.nonEmpty then chunks += finalChunk
+            chunks.result()
+
+  def parseHeaderBlock(block: String): Either[String, Map[String, String]] =
+    if block.isEmpty then Left("Microsoft speech protocol headers are empty")
+    else if hasInvalidLineEnding(block) then
+      Left("Microsoft speech protocol headers must use CRLF")
+    else
+      var normalized = block
+      while normalized.endsWith("\r\n") do normalized = normalized.dropRight(2)
+      if normalized.isEmpty then Left("Microsoft speech protocol headers are empty")
+      else
+        normalized.split("\r\n", -1).foldLeft(Right(Map.empty): Either[String, Map[String, String]]):
+          (current, line) =>
+            current.flatMap: headers =>
+              val colon = line.indexOf(':')
+              if colon <= 0 then Left("Microsoft speech protocol header is malformed")
+              else
+                val name = line.substring(0, colon).trim.toLowerCase(Locale.ROOT)
+                if !name.matches("[a-z0-9-]+") || headers.contains(name) then
+                  Left("Microsoft speech protocol header is malformed or duplicated")
+                else Right(headers.updated(name, line.substring(colon + 1).trim))
+
+  def parseTextFrame(frame: String): Either[String, MicrosoftTextFrame] =
+    val separator = frame.indexOf("\r\n\r\n")
+    if separator <= 0 then Left("Microsoft speech text frame is missing its header separator")
+    else
+      parseHeaderBlock(frame.substring(0, separator)).flatMap: headers =>
+        headers.get("path") match
+          case None => Left("Microsoft speech text frame has no Path header")
+          case Some(path) =>
+            Right(
+              MicrosoftTextFrame(
+                headers,
+                path.toLowerCase(Locale.ROOT),
+                frame.substring(separator + 4)
+              )
+            )
+
+  def parseBinaryFrame(bytes: Array[Byte]): Either[String, MicrosoftBinaryFrame] =
+    if bytes.length < 2 then
+      Left("Microsoft speech binary frame is missing its two-byte header length")
+    else
+      val headerLength = ((bytes(0) & 0xff) << 8) | (bytes(1) & 0xff)
+      if headerLength == 0 || headerLength > bytes.length - 2 then
+        Left("Microsoft speech binary frame has an invalid header length")
+      else
+        decodeUtf8(
+          bytes,
+          2,
+          headerLength,
+          "Microsoft speech binary headers are not valid UTF-8"
+        ).flatMap: header =>
+          parseHeaderBlock(header).flatMap: headers =>
+            if !headers.get("path").exists(_.equalsIgnoreCase("audio")) then
+              Left("Microsoft speech binary frame Path is not audio")
+            else
+              val payload = bytes.slice(headerLength + 2, bytes.length)
+              headers.get("content-type") match
+                case None if payload.nonEmpty =>
+                  Left("Microsoft speech binary audio without Content-Type contains data")
+                case None => Right(MicrosoftBinaryFrame(header, payload, terminal = true))
+                case Some(contentType) if !contentType.equalsIgnoreCase("audio/mpeg") =>
+                  Left("Microsoft speech binary audio has an unexpected Content-Type")
+                case Some(_) if payload.isEmpty =>
+                  Left("Microsoft speech binary audio frame contains no audio")
+                case Some(_) => Right(MicrosoftBinaryFrame(header, payload, terminal = false))
+
+  private def findLastByte(bytes: Array[Byte], value: Byte, end: Int): Int =
+    var index = math.min(end, bytes.length) - 1
+    while index >= 0 do
+      if bytes(index) == value then return index
+      index -= 1
+    -1
+
+  private def findByte(bytes: Array[Byte], value: Byte, start: Int, end: Int): Int =
+    var index = math.max(0, start)
+    val limit = math.min(end, bytes.length)
+    while index < limit do
+      if bytes(index) == value then return index
+      index += 1
+    -1
+
+  private def safeUtf8Split(bytes: Array[Byte], maxBytes: Int): Int =
+    var splitAt = math.min(maxBytes, bytes.length)
+    var found = false
+    while splitAt > 0 && !found do
+      found = decodeUtf8(bytes, 0, splitAt, "invalid UTF-8").isRight
+      if !found then splitAt -= 1
+    splitAt
+
+  private def adjustForXmlEntity(bytes: Array[Byte], splitAt: Int): Int =
+    val ampersand = findLastByte(bytes, '&'.toByte, splitAt)
+    if ampersand < 0 then splitAt
+    else if findByte(bytes, ';'.toByte, ampersand, splitAt) < 0 then ampersand
+    else splitAt
+
+  private def hasInvalidLineEnding(value: String): Boolean =
+    var index = 0
+    while index < value.length do
+      value.charAt(index) match
+        case '\n' if index == 0 || value.charAt(index - 1) != '\r' => return true
+        case '\r' if index + 1 >= value.length || value.charAt(index + 1) != '\n' =>
+          return true
+        case _ => ()
+      index += 1
+    false
 
   private def decodeUtf8(
       bytes: Array[Byte],
       offset: Int,
-      length: Int
+      length: Int,
+      errorMessage: String
   ): Either[String, String] =
     try
       val decoder = StandardCharsets.UTF_8
@@ -730,8 +1022,33 @@ private[backend] object MicrosoftSpeechProtocol:
         .onMalformedInput(CodingErrorAction.REPORT)
         .onUnmappableCharacter(CodingErrorAction.REPORT)
       Right(decoder.decode(ByteBuffer.wrap(bytes, offset, length)).toString)
-    catch case error: Throwable =>
-      Left(s"Microsoft speech binary header is not valid UTF-8: ${error.getMessage}")
+    catch case _: Throwable => Left(errorMessage)
+
+private[backend] object JdkMicrosoftSpeechTransport:
+  def normalizeError(error: Throwable): Throwable =
+    findHandshake(error) match
+      case Some(handshake) =>
+        val response = Option(handshake.getResponse)
+        val status = response.fold(-1)(_.statusCode())
+        val date = response.flatMap(value => Option(value.headers())).flatMap: headers =>
+          val header = headers.firstValue("Date")
+          Option.when(header.isPresent)(header.get())
+        new MicrosoftHandshakeError(status, date, handshake)
+      case None => unwrapCompletion(error)
+
+  private def findHandshake(error: Throwable): Option[WebSocketHandshakeException] =
+    Iterator
+      .iterate(Option(error))(_.flatMap(value => Option(value.getCause)))
+      .takeWhile(_.nonEmpty)
+      .flatten
+      .collectFirst { case handshake: WebSocketHandshakeException => handshake }
+
+  private def unwrapCompletion(error: Throwable): Throwable = error match
+    case wrapper: CompletionException if wrapper.getCause != null =>
+      unwrapCompletion(wrapper.getCause)
+    case wrapper: ExecutionException if wrapper.getCause != null =>
+      unwrapCompletion(wrapper.getCause)
+    case other => other
 
 private final class JdkMicrosoftSpeechTransport(httpClient: HttpClient)
     extends MicrosoftSpeechTransport:
@@ -749,6 +1066,20 @@ private final class JdkMicrosoftSpeechTransport(httpClient: HttpClient)
           connection.cancel(true)
           listener.abort()
       )
+      .handleErrorWith: error =>
+        val normalized = JdkMicrosoftSpeechTransport.normalizeError(error)
+        normalized match
+          case handshake: MicrosoftHandshakeError
+              if listener.hasReceivedAudio && !handshake.audioReceived =>
+            IO.raiseError(
+              new MicrosoftHandshakeError(
+                handshake.status,
+                handshake.date,
+                handshake,
+                audioReceived = true
+              )
+            )
+          case other => IO.raiseError(other)
 
 private[backend] final class MicrosoftSpeechListener(request: MicrosoftSpeechRequest)
     extends WebSocket.Listener:
@@ -759,8 +1090,10 @@ private[backend] final class MicrosoftSpeechListener(request: MicrosoftSpeechReq
   private val textMessage = new StringBuilder
   private var socket: WebSocket = null
   private var done = false
+  private var audioReceived = false
 
   def result: CompletableFuture[Array[Byte]] = resultFuture
+  def hasReceivedAudio: Boolean = synchronized(audioReceived)
 
   def abort(): Unit = synchronized:
     if !done then
@@ -795,7 +1128,19 @@ private[backend] final class MicrosoftSpeechListener(request: MicrosoftSpeechReq
           if last then
             val message = textMessage.result()
             textMessage.clear()
-            if message.contains("Path:turn.end") then finish(webSocket)
+            MicrosoftSpeechProtocol.parseTextFrame(message) match
+              case Left(error) => fail(new IllegalStateException(error), webSocket)
+              case Right(frame) =>
+                frame.path match
+                  case "turn.end" => finish(webSocket)
+                  case "response" | "turn.start" | "audio.metadata" => ()
+                  case other =>
+                    fail(
+                      new IllegalStateException(
+                        s"Unexpected Microsoft speech text path: $other"
+                      ),
+                      webSocket
+                    )
       if !done then webSocket.request(1)
     CompletableFuture.completedFuture(null)
 
@@ -842,14 +1187,15 @@ private[backend] final class MicrosoftSpeechListener(request: MicrosoftSpeechReq
     MicrosoftSpeechProtocol.parseBinaryFrame(message) match
       case Left(error) => fail(new IllegalStateException(error), webSocket)
       case Right(frame) =>
-        if frame.header.contains("Path:audio") && frame.payload.nonEmpty then
+        if !frame.terminal then
           if frame.payload.length > request.maxAudioBytes - audio.size() then
             fail(new ResponseTooLarge("Microsoft speech audio exceeds the 10 MiB limit"), webSocket)
-          else audio.write(frame.payload)
-        if !done && frame.header.contains("Path:turn.end") then finish(webSocket)
+          else
+            audio.write(frame.payload)
+            audioReceived = true
 
   private def finish(webSocket: WebSocket): Unit =
-    if audio.size() == 0 then
+    if !audioReceived || audio.size() == 0 then
       fail(new IllegalStateException("Microsoft speech returned empty audio"), webSocket)
     else
       done = true
