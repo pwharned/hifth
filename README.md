@@ -17,6 +17,55 @@ data powers two independent outputs:
 Both consume the same `data/output/verified/<surah>_aligned.json` files;
 neither depends on the other.
 
+## Quran memorization with your preferred reciter
+
+Many Quran-learning applications offer only a fixed collection of recordings.
+Those recordings may become outdated, vary in quality, or omit the particular
+reciter a learner follows. This project takes a different approach: you provide
+the recitation. If you have an audio recording from YouTube or another source
+you are authorized to use, the project can align it with the Uthmani Quran text
+and turn it into audio-backed Anki flashcards.
+
+Memorization is closely connected to repeated listening. Using a familiar
+reciter can reinforce pronunciation, rhythm, pauses, and transitions between
+ayahs. It also lets you use the same recitation for listening practice and
+scheduled recall.
+
+The generated deck divides the Quran into its 240 traditional Quarter-Hizb
+sections. Each card includes:
+
+- Arabic text aligned with your chosen recording
+- Audio clipped directly from that recording
+- The preceding and following ayahs where available, for practising transitions
+- An adjustable mask that gradually removes visual support
+- Anki scheduling that brings difficult passages back more often
+
+The study philosophy is simple: begin by listening and reading, gradually hide
+more of the text, and move toward reciting the passage independently. A typical
+review might look like this:
+
+1. Listen to the recitation while following the visible Arabic text.
+2. Recite along until the passage becomes familiar.
+3. Increase the masking level and reconstruct the hidden words.
+4. Attempt the complete passage from memory.
+5. Reveal the text, listen again, and assess your recall.
+6. Let Anki schedule the next review.
+
+The preceding and following context helps you practise entering and leaving a
+memorized section rather than learning it in isolation. You can begin with only
+the Surahs you are studying and add more later without losing existing Anki
+review history.
+
+At a high level, the project takes your Surah audio, obtains the corresponding
+Uthmani text, matches each word to its position in the recording, and packages
+the aligned text and audio as Anki cards. See
+[Generating alignment data](#generating-alignment-data-for-the-entire-quran)
+when you are ready to create a deck.
+
+These cards are study aids, not replacements for a qualified teacher. A teacher
+remains important for correcting pronunciation, tajwid, and memorization errors
+that automated tools cannot reliably detect.
+
 ## General-purpose media flashcards
 
 The repository also contains a stateless language-learning card bridge. Python
