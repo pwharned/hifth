@@ -11,6 +11,8 @@ data/raw_audio/
 data/processed_audio/
 data/output/aligned/
 data/output/anki/
+data/classical_cloze/
+.venv/
 *.analysis-cache.json
 *.transcription-cache.json
 # Only verified, final production JSON is tracked
