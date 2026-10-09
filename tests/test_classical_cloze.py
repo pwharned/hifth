@@ -12,6 +12,7 @@ from scripts.classical_cloze.pipeline import (
     source_terms,
     unmatched_status,
 )
+from scripts.classical_cloze.translations import canonical_citation, lookup, passage_url
 
 
 def test_normalization_preserves_display_but_supports_lookup_variants():
@@ -77,3 +78,41 @@ def test_cloze_preserves_spacing_around_target():
         ),
     )
     assert cloze_text(Candidate(sentence, 1, 2, "lemma")) == "Arma {{c1::virumque}} cano."
+
+
+def test_perseus_translation_uses_matching_sentence_in_canonical_passage(tmp_path: Path):
+    urn = "phi0448.phi001.perseus-eng2"
+    (tmp_path / f"{urn}.xml").write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><teiHeader><fileDesc><titleStmt>'
+        '<editor role="translator">W. A. McDevitte</editor></titleStmt></fileDesc></teiHeader>'
+        '<text><body><div n="1"><div n="1"><div n="1"><p>First sentence. '
+        'Second sentence.</p></div></div></div></body></text></TEI>', encoding="utf-8",
+    )
+    result = lookup(tmp_path, "phi0448.phi001.perseus-lat2", "1.1.1.2")
+    assert result is not None
+    assert result.text == "Second sentence."
+    assert result.level == "sentence"
+    assert result.translator == "W. A. McDevitte"
+
+
+def test_perseus_translation_extracts_stephanus_segment(tmp_path: Path):
+    urn = "tlg0059.tlg003.perseus-eng2"
+    (tmp_path / f"{urn}.xml").write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><div>'
+        '<milestone unit="section" n="43a"/><p>Exact passage.</p>'
+        '<milestone unit="section" n="43b"/><p>Next passage.</p>'
+        '</div></body></text></TEI>', encoding="utf-8",
+    )
+    result = lookup(tmp_path, "0059-003", "43a")
+    assert result is not None
+    assert result.text == "Exact passage."
+    assert result.level == "passage"
+
+
+def test_perseus_link_is_a_complete_cts_urn():
+    assert passage_url("tlg0059.tlg003.perseus-eng2", "43a") == (
+        "https://scaife.perseus.org/reader/urn:cts:greekLit:"
+        "tlg0059.tlg003.perseus-eng2:43a/"
+    )
+    assert canonical_citation("phi0690.phi003.perseus-lat2", "1.1-4.1") == "1.1-4"
+    assert canonical_citation("phi0448.phi001.perseus-lat2", "1.1.1.2") == "1.1.1"

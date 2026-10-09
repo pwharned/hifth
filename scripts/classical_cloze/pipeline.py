@@ -17,11 +17,16 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from scripts.classical_cloze.translations import (
+    canonical_citation, edition_urn, fetch_translations, lookup, passage_url,
+)
+
 
 ANKI_URL = "http://127.0.0.1:8765"
 SOURCE_DECK = "Greek and Latin"
 DESTINATION_DECK = "Greek and Latin::Corpus Cloze"
 MODEL_NAME = "Classical Corpus Cloze"
+TRANSLATION_ROOT = Path("data/classical_cloze/translations")
 
 GREEK_DOCS = {
     "tlg0003.tlg001": ("Thucydides", "Histories", "classical"),
@@ -307,6 +312,7 @@ def read_glaux(path: Path) -> Iterable[Sentence]:
                 reference = (
                     word.get("div_stephanus_section")
                     or word.get("div_perseus_section")
+                    or word.get("div_bekker_page")
                     or word.get("div_book")
                     or ""
                 )
@@ -525,6 +531,18 @@ def citation(candidate: Candidate) -> str:
     return f"{sentence.author}, <i>{sentence.work}</i>, {html.escape(reference)} ({sentence.corpus})"
 
 
+def linked_citation(candidate: Candidate, translation_urn: str | None = None) -> str:
+    rendered = citation(candidate)
+    urn = translation_urn or edition_urn(candidate.sentence.document_id)
+    if not urn:
+        return rendered
+    reference = canonical_citation(
+        candidate.sentence.document_id, candidate.sentence.sentence_id
+    )
+    url = passage_url(urn, reference)
+    return f'{rendered} · <a href="{html.escape(url, quote=True)}">Open passage in Perseus</a>'
+
+
 def candidate_json(candidate: Candidate) -> dict[str, Any]:
     sentence = candidate.sentence
     return {
@@ -591,18 +609,24 @@ def build_manifest(corpus_root: Path, pilot_per_language: int) -> dict[str, Any]
         primary = candidates[0]
         alternatives = candidates[1:6]
         sentence = primary.sentence
+        aligned = lookup(
+            TRANSLATION_ROOT, sentence.document_id, sentence.sentence_id
+        )
         tags = [
             "generated::corpus_cloze", f"language::{source['language']}",
             f"period::{sentence.period}",
             "author::" + re.sub(r"[^a-z0-9]+", "_", sentence.author.casefold()).strip("_"),
-            "corpus_cloze::translation_missing",
+            "corpus_cloze::translation_" + (aligned.level if aligned else "missing"),
         ]
         entries.append({
             **source,
             "status": "matched",
             "text": cloze_text(primary),
-            "translation": "",
-            "citation_html": citation(primary),
+            "translation": aligned.text if aligned else "",
+            "translation_level": aligned.level if aligned else None,
+            "translation_urn": aligned.urn if aligned else None,
+            "citation_html": linked_citation(primary, aligned.urn if aligned else None)
+            + (f"<br><small>English: {html.escape(aligned.translator)}, Perseus Digital Library ({aligned.level}-level alignment)</small>" if aligned else ""),
             "lemma": primary.sentence.tokens[primary.start].lemma,
             "morphology_html": morphology(primary),
             "tags": tags,
@@ -729,6 +753,34 @@ def import_existing_replacements(manifest: dict[str, Any]) -> None:
                 entry["audio_tempo"] = 0.9
 
 
+def update_existing_replacements(manifest: dict[str, Any]) -> None:
+    entries = [
+        entry for entry in manifest["entries"]
+        if entry.get("generated_note_id") and entry["status"] == "matched"
+    ]
+    for batch in chunks(entries, 100):
+        actions = [{
+            "action": "updateNoteFields", "version": 6,
+            "params": {"note": {
+                "id": entry["generated_note_id"],
+                "fields": {
+                    "Translation": entry["translation"],
+                    "Citation": entry["citation_html"],
+                },
+            }},
+        } for entry in batch]
+        anki("multi", actions=actions)
+        note_ids = [entry["generated_note_id"] for entry in batch]
+        anki("removeTags", notes=note_ids, tags="corpus_cloze::translation_missing corpus_cloze::translation_passage corpus_cloze::translation_sentence")
+        for level in ("missing", "passage", "sentence"):
+            ids = [
+                entry["generated_note_id"] for entry in batch
+                if (entry.get("translation_level") or "missing") == level
+            ]
+            if ids:
+                anki("addTags", notes=ids, tags=f"corpus_cloze::translation_{level}")
+
+
 MODEL_IDS_FOR_LANGUAGE = {
     "greek": "facebook/mms-tts-grc",
     "latin": "facebook/mms-tts-lat",
@@ -757,6 +809,7 @@ def write_migration(manifest_path: Path) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     ensure_model()
     import_existing_replacements(manifest)
+    update_existing_replacements(manifest)
     pending = [
         entry for entry in manifest["entries"]
         if entry["status"] == "matched" and not entry.get("generated_note_id")
@@ -833,6 +886,7 @@ def main() -> None:
     migration = subparsers.add_parser("write-migration", help="idempotently create all matched notes suspended")
     migration.add_argument("manifest", type=Path)
     commit = subparsers.add_parser("commit-migration", help="activate replacements and suspend completed originals")
+    subparsers.add_parser("fetch-translations", help="download canonical Perseus English editions")
     commit.add_argument("manifest", type=Path)
     args = parser.parse_args()
     if args.command == "build-manifest":
@@ -846,6 +900,8 @@ def main() -> None:
         write_migration(args.manifest)
     elif args.command == "commit-migration":
         commit_migration(args.manifest)
+    elif args.command == "fetch-translations":
+        print(json.dumps({"downloaded": fetch_translations(TRANSLATION_ROOT), "directory": str(TRANSLATION_ROOT)}))
     else:
         tag_unmatched(args.manifest)
 

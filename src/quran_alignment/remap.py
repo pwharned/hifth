@@ -87,9 +87,10 @@ def run_remap(
             "text":                   meta["text"],
             "start_ms":               item["start_ms"],
             "end_ms":                 item["end_ms"],
-            "score":                  0.0,
+            "score":                  item["score"],
             "is_basmala":             meta.get("is_basmala", False),
             "repetitions":            item["repetitions"],
+            "timestamp_source":       source,
             "timestamp_interpolated": source == "interpolated"
         })
     result = {

@@ -40,8 +40,20 @@ python -m scripts.classical_cloze.pipeline tag-unmatched data/classical_cloze/pi
 ```
 
 The base adapter covers eligible sentences in the downloaded UD treebanks.
-Published translation alignment remains a separate follow-up adapter; missing
-translations are visibly tagged.
+Download the configured public-domain English Perseus editions before building
+the manifest:
+
+```bash
+python -m scripts.classical_cloze.pipeline fetch-translations
+```
+
+The pipeline aligns translations by canonical section or line range. When a
+source citation also identifies a sentence within that passage, it selects the
+same numbered English sentence; otherwise the card is explicitly tagged as a
+passage-level alignment. Cards without a defensible canonical match remain
+tagged `corpus_cloze::translation_missing`. Every supported citation includes
+a link to its CTS passage in the Perseus/Scaife reader, plus translator and
+alignment provenance.
 
 ## Expanded corpora
 

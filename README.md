@@ -111,10 +111,28 @@ but is much slower for `medium`-sized Whisper).
 
 ### 2. Inputs
 
-Place source files before running anything:
+Place the recitation audio before running the pipeline:
 
 - `data/raw_audio/<NNN>.mp3` — one recitation file per Surah (`001.mp3` … `114.mp3`)
-- `data/text/<NNN>_uthmani.json` — cached canonical Uthmani text per Surah
+
+For example, download audio from YouTube with `yt-dlp` and name it for Surah 3:
+
+```bash
+yt-dlp \
+  --remote-components ejs:github \
+  --extractor-args "youtube:player_client=default,-android_vr,-android_sdkless" \
+  -x --audio-format mp3 \
+  -o "data/raw_audio/003.%(ext)s" \
+  "https://www.youtube.com/watch?v=0UITOdeCk9w"
+```
+
+Change `003` and the URL for another Surah. The output basename must be the
+zero-padded Surah number so the pipeline can locate it. Only download audio
+that you are authorized to use.
+
+The aligner downloads canonical Uthmani text from Quran.com when it is missing
+and caches it at `data/text/<NNN>_uthmani.json`; it does not need to be
+predownloaded. Existing cache files are reused.
 
 ### 3. Run the pipeline
 
@@ -136,12 +154,19 @@ For a subset (e.g. resuming after a failure, or just a few Surahs):
 python scripts/run_pipeline.py --surahs 1 2 3 --device cpu
 ```
 
-The runner prints a pass/fail summary at the end and exits non-zero if
-any Surah failed. Failures are typically `validate` QA rejections
-(silence gaps, negative durations, word-count mismatches) — inspect the
-report written next to `data/output/aligned/<NNN>_aligned.json` and
-re-run the specific step (`python -m src.quran_alignment.align --surah N ...`)
-after fixing the input.
+The runner prints a pass/fail summary at the end and exits non-zero if any
+Surah failed. Negative or zero word durations and word-count mismatches are
+hard validation failures and prevent promotion. Long silence gaps and low
+alignment-confidence scores are warnings: they are logged for inspection but
+do not prevent promotion or make validation exit unsuccessfully. Confidence
+is checked only when WhisperX supplies a numeric score; unavailable confidence
+is stored as `null` rather than treated as zero. Re-run the specific alignment
+step after fixing a hard failure:
+
+```bash
+python -m src.quran_alignment.align --surah N --device cuda
+python -m src.quran_alignment.validate --surah N
+```
 
 Only Surahs present in `data/output/verified/` are usable by either
 downstream output (web app or Anki export) — partial Quran coverage is
@@ -153,13 +178,12 @@ Once some (or all) Surahs are verified, generate the interactive
 Quarter-Hizb flashcard deck:
 
 ```bash
-python -m pip install genanki   # one-time
 python scripts/generate_anki_cards.py
 ```
 
 This produces `data/output/anki/quran_quarter_hizb.apkg`, ready to import
-into Anki, covering every Quarter-Hizb whose required Surahs are all
-verified. Useful flags:
+into Anki. With no range flags, the generator attempts all QH IDs 1 through
+240 and skips those whose required data is unavailable. Useful flags:
 
 ```bash
 python scripts/generate_anki_cards.py --qh-start 1 --qh-end 20   # subset, e.g. while verifying incrementally
@@ -172,6 +196,11 @@ masking algorithm and seeding as the web app's player) over the full
 Quarter-Hizb plus the ayah immediately before and after it. At the beginning
 and end of the Quran, only the available adjacent ayah is included. All of
 this text participates in masking and the corresponding audio is included.
+A QH crossing a Surah boundary is supported: its per-Surah audio clips are
+trimmed and concatenated. Every Surah used by either the QH or its adjacent
+context must have `data/output/verified/<NNN>_aligned.json`; audio generation
+also requires `data/processed_audio/<NNN>.wav`. Therefore context can require
+an adjacent verified Surah even when the QH itself does not cross a boundary.
 See `scripts/anki_export/README.md` for implementation details and caveats.
 
 Re-running the generator after verifying more Surahs is safe and

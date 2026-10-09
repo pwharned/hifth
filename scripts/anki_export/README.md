@@ -15,7 +15,7 @@ are skipped and reported in the summary.
 ## Run
 
 ```bash
-python scripts/generate_anki_cards.py
+python scripts/generate_anki_cards.py                       # attempt all QH IDs 1-240
 python scripts/generate_anki_cards.py --qh-start 1 --qh-end 20
 python scripts/generate_anki_cards.py --no-audio   # skip ffmpeg trimming, smaller/faster
 ```
@@ -35,7 +35,12 @@ audio, **Tools > Check Media** can remove old clips that Anki no longer uses.
   masking.
 - Audio is trimmed per QH from `data/processed_audio/<surah>.wav` using
   first/last word timestamps (+250ms pad) and concatenated across Surah
-  boundaries.
+  boundaries. Missing processed audio or an ffmpeg failure skips the card
+  unless `--no-audio` is used.
+- Every Surah used by the QH or its adjacent context must be verified. This
+  can require the previous or next Surah even when the QH itself is contained
+  within one Surah. Cross-Surah QHs are supported when all required verified
+  JSON and processed WAV files exist.
 - `quran_data.py` / `mask_engine.py` are maintained independently from the
   Scala `QuranData`/`MaskEngine`. The adjacent-ayah expansion is specific to
   Anki generation and does not change the web player.

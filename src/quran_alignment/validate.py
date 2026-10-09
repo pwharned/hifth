@@ -45,12 +45,15 @@ class ValidationReport:
     issues:        list[ValidationIssue] = field(default_factory=list)
     @property
     def passed(self) -> bool:
-        return len(self.issues) == 0
+        return not any(
+            issue.check in {"negative_duration", "word_count_mismatch"}
+            for issue in self.issues
+        )
     def summary(self) -> str:
         if self.passed:
             return (
                 f"Surah {self.surah_number} | PASSED | "
-                f"{self.total_words} words | 0 issues"
+                f"{self.total_words} words | {len(self.issues)} warning(s)"
             )
         return (
             f"Surah {self.surah_number} | FAILED | "
@@ -108,13 +111,14 @@ def check_silence_gaps(words: list[dict]) -> list[ValidationIssue]:
     return issues
 def check_low_confidence_scores(words: list[dict]) -> list[ValidationIssue]:
     """
-    Flags any word with an alignment confidence score below MIN_WORD_SCORE.
+    Flags any word with an available alignment confidence below MIN_WORD_SCORE.
     Low scores indicate the aligner struggled to match the phonemes.
     These do not fail validation but are reported as warnings.
     """
     issues = []
     for w in words:
-        if w["score"] < MIN_WORD_SCORE:
+        score = w.get("score")
+        if isinstance(score, (int, float)) and score < MIN_WORD_SCORE:
             issues.append(ValidationIssue(
                 check  = "low_confidence",
                 index  = w["index"],
@@ -122,7 +126,7 @@ def check_low_confidence_scores(words: list[dict]) -> list[ValidationIssue]:
                 ayah   = w["ayah"],
                 text   = w["text"],
                 detail = (
-                    f"Alignment score {w['score']:.4f} is below "
+                    f"Alignment score {score:.4f} is below "
                     f"threshold {MIN_WORD_SCORE}. "
                     f"Timestamp may be imprecise."
                 )

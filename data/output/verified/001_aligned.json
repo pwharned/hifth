@@ -9,11 +9,13 @@
       "ayah": 1,
       "position": 1,
       "text": "بِسْمِ",
-      "start_ms": 211.0,
-      "end_ms": 732.0,
+      "start_ms": 4273.0,
+      "end_ms": 4733.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 1,
@@ -21,11 +23,13 @@
       "ayah": 1,
       "position": 2,
       "text": "ٱللَّهِ",
-      "start_ms": 772.0,
-      "end_ms": 1392.0,
+      "start_ms": 4753.0,
+      "end_ms": 5394.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 2,
@@ -33,11 +37,13 @@
       "ayah": 1,
       "position": 3,
       "text": "ٱلرَّحْمَـٰنِ",
-      "start_ms": 1733.0,
-      "end_ms": 2634.0,
+      "start_ms": 5434.0,
+      "end_ms": 6314.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 2
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 3,
@@ -45,11 +51,13 @@
       "ayah": 1,
       "position": 4,
       "text": "ٱلرَّحِيمِ",
-      "start_ms": 2674.0,
-      "end_ms": 4195.0,
+      "start_ms": 6354.0,
+      "end_ms": 7455.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 4,
@@ -57,11 +65,13 @@
       "ayah": 2,
       "position": 1,
       "text": "ٱلْحَمْدُ",
-      "start_ms": 7610.0,
-      "end_ms": 8190.0,
+      "start_ms": 7615.0,
+      "end_ms": 8215.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 4
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 5,
@@ -69,11 +79,13 @@
       "ayah": 2,
       "position": 2,
       "text": "لِلَّهِ",
-      "start_ms": 8230.0,
-      "end_ms": 8971.0,
+      "start_ms": 8235.0,
+      "end_ms": 8935.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 2
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 6,
@@ -81,11 +93,13 @@
       "ayah": 2,
       "position": 3,
       "text": "رَبِّ",
-      "start_ms": 9111.0,
-      "end_ms": 9691.0,
+      "start_ms": 9115.0,
+      "end_ms": 9676.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 7,
@@ -93,11 +107,13 @@
       "ayah": 2,
       "position": 4,
       "text": "ٱلْعَـٰلَمِينَ",
-      "start_ms": 9711.0,
-      "end_ms": 12952.0,
+      "start_ms": 9716.0,
+      "end_ms": 10676.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 8,
@@ -105,11 +121,13 @@
       "ayah": 3,
       "position": 1,
       "text": "ٱلرَّحْمَـٰنِ",
-      "start_ms": 13112.0,
-      "end_ms": 13953.0,
+      "start_ms": 13157.0,
+      "end_ms": 13957.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 9,
@@ -117,11 +135,13 @@
       "ayah": 3,
       "position": 2,
       "text": "ٱلرَّحِيمِ",
-      "start_ms": 13993.0,
-      "end_ms": 14893.0,
+      "start_ms": 13977.0,
+      "end_ms": 14878.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 10,
@@ -129,11 +149,13 @@
       "ayah": 4,
       "position": 1,
       "text": "مَـٰلِكِ",
-      "start_ms": 14973.0,
-      "end_ms": 15633.0,
+      "start_ms": 14978.0,
+      "end_ms": 15618.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 11,
@@ -141,11 +163,13 @@
       "ayah": 4,
       "position": 2,
       "text": "يَوْمِ",
-      "start_ms": 15733.0,
-      "end_ms": 16173.0,
+      "start_ms": 15718.0,
+      "end_ms": 16338.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 12,
@@ -153,11 +177,13 @@
       "ayah": 4,
       "position": 3,
       "text": "ٱلدِّينِ",
-      "start_ms": 16233.0,
-      "end_ms": 17034.0,
+      "start_ms": 16358.0,
+      "end_ms": 17038.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 13,
@@ -165,11 +191,13 @@
       "ayah": 5,
       "position": 1,
       "text": "إِيَّاكَ",
-      "start_ms": 17094.0,
-      "end_ms": 17994.0,
+      "start_ms": 17078.0,
+      "end_ms": 18198.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 14,
@@ -177,11 +205,13 @@
       "ayah": 5,
       "position": 2,
       "text": "نَعْبُدُ",
-      "start_ms": 18114.0,
-      "end_ms": 18854.0,
+      "start_ms": 18218.0,
+      "end_ms": 18839.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 15,
@@ -189,11 +219,13 @@
       "ayah": 5,
       "position": 3,
       "text": "وَإِيَّاكَ",
-      "start_ms": 18894.0,
-      "end_ms": 19955.0,
+      "start_ms": 18879.0,
+      "end_ms": 19959.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 16,
@@ -201,11 +233,13 @@
       "ayah": 5,
       "position": 4,
       "text": "نَسْتَعِينُ",
-      "start_ms": 20055.0,
-      "end_ms": 22996.0,
+      "start_ms": 20039.0,
+      "end_ms": 22940.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 17,
@@ -213,11 +247,13 @@
       "ayah": 6,
       "position": 1,
       "text": "ٱهْدِنَا",
-      "start_ms": 23096.0,
-      "end_ms": 23736.0,
+      "start_ms": 23100.0,
+      "end_ms": 23740.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 18,
@@ -225,11 +261,13 @@
       "ayah": 6,
       "position": 2,
       "text": "ٱلصِّرَٰطَ",
-      "start_ms": 23776.0,
-      "end_ms": 24697.0,
+      "start_ms": 23780.0,
+      "end_ms": 24660.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 19,
@@ -237,11 +275,13 @@
       "ayah": 6,
       "position": 3,
       "text": "ٱلْمُسْتَقِيمَ",
-      "start_ms": 24737.0,
-      "end_ms": 26037.0,
+      "start_ms": 24680.0,
+      "end_ms": 26041.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 20,
@@ -249,11 +289,13 @@
       "ayah": 7,
       "position": 1,
       "text": "صِرَٰطَ",
-      "start_ms": 26177.0,
-      "end_ms": 26918.0,
+      "start_ms": 26161.0,
+      "end_ms": 26901.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 21,
@@ -261,11 +303,13 @@
       "ayah": 7,
       "position": 2,
       "text": "ٱلَّذِينَ",
-      "start_ms": 42600.0,
-      "end_ms": 43341.0,
+      "start_ms": 26961.0,
+      "end_ms": 27881.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 2
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 22,
@@ -273,11 +317,13 @@
       "ayah": 7,
       "position": 3,
       "text": "أَنْعَمْتَ",
-      "start_ms": 27958.0,
-      "end_ms": 28958.0,
+      "start_ms": 27961.0,
+      "end_ms": 28941.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 23,
@@ -285,11 +331,13 @@
       "ayah": 7,
       "position": 4,
       "text": "عَلَيْهِمْ",
-      "start_ms": 29038.0,
-      "end_ms": 29919.0,
+      "start_ms": 29041.0,
+      "end_ms": 30762.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 24,
@@ -297,11 +345,13 @@
       "ayah": 7,
       "position": 5,
       "text": "غَيْرِ",
-      "start_ms": 30879.0,
-      "end_ms": 31521.0,
+      "start_ms": 30862.0,
+      "end_ms": 31522.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 25,
@@ -309,11 +359,13 @@
       "ayah": 7,
       "position": 6,
       "text": "ٱلْمَغْضُوبِ",
-      "start_ms": 31561.0,
-      "end_ms": 32683.0,
+      "start_ms": 31602.0,
+      "end_ms": 32682.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 26,
@@ -321,11 +373,13 @@
       "ayah": 7,
       "position": 7,
       "text": "عَلَيْهِمْ",
-      "start_ms": 32783.0,
-      "end_ms": 33805.0,
+      "start_ms": 32782.0,
+      "end_ms": 33823.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 27,
@@ -333,11 +387,13 @@
       "ayah": 7,
       "position": 8,
       "text": "وَلَا",
-      "start_ms": 33905.0,
-      "end_ms": 34366.0,
+      "start_ms": 33903.0,
+      "end_ms": 34443.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     },
     {
       "index": 28,
@@ -345,11 +401,13 @@
       "ayah": 7,
       "position": 9,
       "text": "ٱلضَّآلِّينَ",
-      "start_ms": 34386.0,
-      "end_ms": 42400.0,
+      "start_ms": 34483.0,
+      "end_ms": 41685.0,
       "score": 0.0,
       "is_basmala": false,
-      "repetitions": 1
+      "repetitions": 1,
+      "timestamp_source": "match",
+      "timestamp_interpolated": false
     }
   ]
 }

@@ -346,8 +346,8 @@ def map_transcript_to_canonical(
     # ── Step 2: Repetition resolution ────────────────────────────────────────
     alignment = _resolve_repetitions(alignment, transcript_words, canonical_words)
     # ── Step 3: Accumulate occurrences per canonical word ─────────────────────
-    # occurrences[canonical_idx] = list of (start_ms, end_ms, match_type)
-    occurrences: dict[int, list[tuple[float, float, str]]] = {
+    # occurrences[canonical_idx] = (start_ms, end_ms, match_type, confidence)
+    occurrences: dict[int, list[tuple[float, float, str, float | None]]] = {
         i: [] for i in range(N)
     }
     for canon_idx, trans_idx, match_type in alignment:
@@ -355,17 +355,19 @@ def map_transcript_to_canonical(
             t_word   = transcript_words[trans_idx]
             start_ms = round(t_word["start"] * 1000, 1)
             end_ms   = round(t_word["end"]   * 1000, 1)
-            occurrences[canon_idx].append((start_ms, end_ms, match_type))
+            score = t_word.get("score") if match_type == "match" else None
+            occurrences[canon_idx].append((start_ms, end_ms, match_type, score))
     # ── Step 4: Resolve to last occurrence, flag source ──────────────────────
     resolved = []
     for idx, word in enumerate(canonical_words):
         occ = occurrences[idx]
         if occ:
-            start_ms, end_ms, match_type = occ[-1]
+            start_ms, end_ms, match_type, score = occ[-1]
             resolved.append({
                 "meta":             word,
                 "start_ms":         start_ms,
                 "end_ms":           end_ms,
+                "score":            score,
                 "repetitions":      len(occ),
                 "timestamp_source": match_type   # "match" or "nearby"
             })
@@ -375,6 +377,7 @@ def map_transcript_to_canonical(
                 "meta":             word,
                 "start_ms":         0.0,
                 "end_ms":           0.0,
+                "score":            None,
                 "repetitions":      0,
                 "timestamp_source": "interpolated"
             })
@@ -532,7 +535,7 @@ def _forced_align_chunk(
         meta        Alignment model metadata.
         device:          "cuda" or "cpu".
     Returns:
-        List of word dicts: {"word": str, "start": float, "end": float}
+        List of word dicts with text, timestamps, and optional confidence score.
     """
     if not transcript_segs:
         return []
@@ -559,7 +562,8 @@ def _forced_align_chunk(
         words.append({
             "word":  text,
             "start": word.get("start", 0.0),
-            "end":   word.get("end",   0.0)
+            "end":   word.get("end",   0.0),
+            "score": word.get("score")
         })
     return words
 
@@ -849,7 +853,7 @@ def run_alignment(
             "text":                   meta["text"],
             "start_ms":               item["start_ms"],
             "end_ms":                 item["end_ms"],
-            "score":                  0.0,
+            "score":                  item["score"],
             "is_basmala":             meta.get("is_basmala", False),
             "repetitions":            item["repetitions"],
             "timestamp_source":       source,
