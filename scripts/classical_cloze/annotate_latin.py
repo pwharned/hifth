@@ -44,8 +44,10 @@ def extract_blocks(path: Path, allowed_books: set[str] | None):
     root = ET.parse(path).getroot()
     parents = {child: parent for parent in root.iter() for child in parent}
     if path.name == "virgil-aeneid.xml":
-        for book in root.findall('.//tei:div[@subtype="book"]', NS):
+        for book in root.findall('.//tei:div[@type="textpart"][@subtype="book"][@n]', NS):
             book_number = book.get("n", "")
+            if not book_number:
+                continue
             buffered = []
             start_line = ""
             end_line = ""
@@ -62,8 +64,10 @@ def extract_blocks(path: Path, allowed_books: set[str] | None):
             if buffered:
                 yield f"{book_number}.{start_line}-{end_line}", " ".join(buffered)
         return
-    for paragraph in root.findall(".//tei:p", NS):
+    for paragraph in root.findall(".//tei:text/tei:body//tei:p", NS):
         citation = ancestor_citation(parents, paragraph)
+        if not citation:
+            continue
         book = citation.split(".", 1)[0]
         if allowed_books is not None and book not in allowed_books:
             continue

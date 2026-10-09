@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import html
 import json
@@ -18,13 +19,15 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from scripts.classical_cloze.translations import (
-    canonical_citation, edition_urn, fetch_translations, lookup, passage_url,
+    canonical_citation, canonical_treebank_reference, edition_urn,
+    fetch_translations, lookup, passage_url,
 )
 
 
 ANKI_URL = "http://127.0.0.1:8765"
 SOURCE_DECK = "Greek and Latin"
 DESTINATION_DECK = "Greek and Latin::Corpus Cloze"
+UNMATCHED_DECK = "Greek and Latin::Unmatched Originals"
 MODEL_NAME = "Classical Corpus Cloze"
 TRANSLATION_ROOT = Path("data/classical_cloze/translations")
 
@@ -223,7 +226,11 @@ def read_conllu(path: Path, language: str) -> Iterable[Sentence]:
             period=period,
             corpus=corpus,
             document_id=metadata.get("newdoc id", metadata.get("source", "")),
-            sentence_id=metadata.get("sent_id", ""),
+            sentence_id=(
+                canonical_treebank_reference(
+                    TRANSLATION_ROOT, metadata.get("sent_id", "")
+                ) or metadata.get("sent_id", "")
+            ),
             text=text,
             tokens=tuple(tokens),
         )
@@ -731,6 +738,13 @@ def chunks(items: list[Any], size: int) -> Iterable[list[Any]]:
         yield items[start:start + size]
 
 
+def batched_note_info(note_ids: list[int]) -> list[dict[str, Any]]:
+    return [
+        note for batch in chunks(note_ids, 500)
+        for note in anki("notesInfo", notes=batch)
+    ]
+
+
 def import_existing_replacements(manifest: dict[str, Any]) -> None:
     existing_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')
     if not existing_ids:
@@ -872,6 +886,68 @@ def tag_unmatched(manifest_path: Path) -> None:
             anki("addTags", notes=[entry["note_id"]], tags=f"corpus_cloze::{entry['status']}")
 
 
+def finalize_migration(manifest_path: Path, archive_path: Path) -> None:
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    matched = [entry for entry in manifest["entries"] if entry["status"] == "matched"]
+    unmatched = [entry for entry in manifest["entries"] if entry["status"] != "matched"]
+    if len(matched) != 8412 or len(unmatched) != 1905:
+        raise RuntimeError("refusing to finalize: expected 8,412 matched and 1,905 unmatched notes")
+
+    source_ids = anki("findNotes", query=f'deck:"{SOURCE_DECK}" note:Basic')
+    expected_ids = {entry["note_id"] for entry in manifest["entries"]}
+    if set(source_ids) != expected_ids:
+        raise RuntimeError("refusing to finalize: source deck does not exactly match the manifest")
+
+    destination_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')
+    destination_notes = batched_note_info(destination_ids)
+    by_original = {
+        int(note["fields"]["OriginalNoteID"]["value"]): note
+        for note in destination_notes
+        if note["fields"].get("OriginalNoteID", {}).get("value", "").isdigit()
+    }
+    matched_ids = {entry["note_id"] for entry in matched}
+    if len(destination_notes) != 8412 or set(by_original) != matched_ids:
+        raise RuntimeError("refusing to finalize: replacements do not exactly cover matched originals")
+    destination_cards = anki("findCards", query=f'deck:"{DESTINATION_DECK}"')
+    destination_card_info = anki("cardsInfo", cards=destination_cards)
+    if len(destination_cards) != 8412 or any(card["queue"] == -1 for card in destination_card_info):
+        raise RuntimeError("refusing to finalize: all 8,412 replacements must be active")
+    if any("[sound:" not in note["fields"]["Text"]["value"] for note in destination_notes):
+        raise RuntimeError("refusing to finalize: every replacement must have audio")
+
+    source_notes = batched_note_info(source_ids)
+    source_cards = anki("findCards", query=f'deck:"{SOURCE_DECK}" note:Basic')
+    source_card_info = anki("cardsInfo", cards=source_cards)
+    archive = {
+        "schema_version": 1,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "manifest": str(manifest_path),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "source_deck": SOURCE_DECK,
+        "matched_count": len(matched),
+        "notes": [note for note in source_notes if note["noteId"] in matched_ids],
+        "cards": [card for card in source_card_info if card["note"] in matched_ids],
+    }
+    if len(archive["notes"]) != 8412 or len(archive["cards"]) != 8412:
+        raise RuntimeError("refusing to finalize: archive is incomplete")
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_path.write_text(
+        json.dumps(archive, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    if len(json.loads(archive_path.read_text(encoding="utf-8"))["notes"]) != 8412:
+        raise RuntimeError("refusing to finalize: archive verification failed")
+
+    anki("createDeck", deck=UNMATCHED_DECK)
+    for status in sorted({entry["status"] for entry in unmatched}):
+        ids = [entry["note_id"] for entry in unmatched if entry["status"] == status]
+        anki("addTags", notes=ids, tags=f"corpus_cloze::unmatched corpus_cloze::{status}")
+    for batch in chunks([entry["note_id"] for entry in unmatched], 100):
+        anki("changeDeck", cards=cards_for_notes(batch), deck=UNMATCHED_DECK)
+
+    anki("deleteNotes", notes=sorted(matched_ids))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -888,6 +964,9 @@ def main() -> None:
     commit = subparsers.add_parser("commit-migration", help="activate replacements and suspend completed originals")
     subparsers.add_parser("fetch-translations", help="download canonical Perseus English editions")
     commit.add_argument("manifest", type=Path)
+    finalize = subparsers.add_parser("finalize-migration", help="archive/delete matched originals and move residuals")
+    finalize.add_argument("manifest", type=Path)
+    finalize.add_argument("--archive", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "build-manifest":
         manifest = build_manifest(args.corpora, args.pilot_per_language)
@@ -902,6 +981,8 @@ def main() -> None:
         commit_migration(args.manifest)
     elif args.command == "fetch-translations":
         print(json.dumps({"downloaded": fetch_translations(TRANSLATION_ROOT), "directory": str(TRANSLATION_ROOT)}))
+    elif args.command == "finalize-migration":
+        finalize_migration(args.manifest, args.archive)
     else:
         tag_unmatched(args.manifest)
 

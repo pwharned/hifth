@@ -12,7 +12,10 @@ from scripts.classical_cloze.pipeline import (
     source_terms,
     unmatched_status,
 )
-from scripts.classical_cloze.translations import canonical_citation, lookup, passage_url
+from scripts.classical_cloze.translations import (
+    canonical_citation, canonical_treebank_reference, lookup, passage_url,
+)
+from scripts.classical_cloze.annotate_latin import extract_blocks
 
 
 def test_normalization_preserves_display_but_supports_lookup_variants():
@@ -80,18 +83,18 @@ def test_cloze_preserves_spacing_around_target():
     assert cloze_text(Candidate(sentence, 1, 2, "lemma")) == "Arma {{c1::virumque}} cano."
 
 
-def test_perseus_translation_uses_matching_sentence_in_canonical_passage(tmp_path: Path):
+def test_perseus_translation_uses_enclosing_canonical_passage(tmp_path: Path):
     urn = "phi0448.phi001.perseus-eng2"
     (tmp_path / f"{urn}.xml").write_text(
         '<TEI xmlns="http://www.tei-c.org/ns/1.0"><teiHeader><fileDesc><titleStmt>'
         '<editor role="translator">W. A. McDevitte</editor></titleStmt></fileDesc></teiHeader>'
-        '<text><body><div n="1"><div n="1"><div n="1"><p>First sentence. '
-        'Second sentence.</p></div></div></div></body></text></TEI>', encoding="utf-8",
+        '<text><body><div n="1"><div n="1"><p>First sentence. '
+        'Second sentence.</p></div></div></body></text></TEI>', encoding="utf-8",
     )
     result = lookup(tmp_path, "phi0448.phi001.perseus-lat2", "1.1.1.2")
     assert result is not None
-    assert result.text == "Second sentence."
-    assert result.level == "sentence"
+    assert result.text == "First sentence. Second sentence."
+    assert result.level == "passage"
     assert result.translator == "W. A. McDevitte"
 
 
@@ -114,5 +117,28 @@ def test_perseus_link_is_a_complete_cts_urn():
         "https://scaife.perseus.org/reader/urn:cts:greekLit:"
         "tlg0059.tlg003.perseus-eng2:43a/"
     )
-    assert canonical_citation("phi0690.phi003.perseus-lat2", "1.1-4.1") == "1.1-4"
+    assert canonical_citation("phi0690.phi003.perseus-lat2", "1.1-4.1") == "1.1-1.4"
+    assert canonical_citation("phi0690.phi003.perseus-lat2", "10.62b-64.2") == "10.62b-10.64"
     assert canonical_citation("phi0448.phi001.perseus-lat2", "1.1.1.2") == "1.1.1"
+
+
+def test_latin_extraction_ignores_header_and_outer_book_wrapper(tmp_path: Path):
+    path = tmp_path / "virgil-aeneid.xml"
+    path.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><teiHeader><encodingDesc>'
+        '<p>Header prose.</p></encodingDesc></teiHeader><text><body>'
+        '<div type="edition" subtype="book"><div type="textpart" subtype="book" n="1">'
+        '<l n="1">Arma virumque cano.</l></div></div></body></text></TEI>',
+        encoding="utf-8",
+    )
+    assert list(extract_blocks(path, None)) == [("1.1-1", "Arma virumque cano.")]
+
+
+def test_treebank_sentence_id_resolves_to_canonical_reference(tmp_path: Path):
+    (tmp_path / "tlg0012.tlg001.perseus-grc1.tb.xml").write_text(
+        '<treebank><sentence id="2274106" subdoc="1.1-1.7"/></treebank>',
+        encoding="utf-8",
+    )
+    assert canonical_treebank_reference(
+        tmp_path, "tlg0012.tlg001.perseus-grc1.tb.xml@2274106"
+    ) == "1.1-1.7"

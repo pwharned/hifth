@@ -4,6 +4,7 @@ import re
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -18,9 +19,16 @@ EDITIONS = {
     "0059-003": ("canonical-greekLit", "tlg0059", "tlg003", "tlg0059.tlg003.perseus-eng2"),
     "0059-030": ("canonical-greekLit", "tlg0059", "tlg030", "tlg0059.tlg030.perseus-eng2"),
     "0086-010": ("canonical-greekLit", "tlg0086", "tlg010", "tlg0086.tlg010.perseus-eng2"),
+    "tlg0012.tlg001": ("canonical-greekLit", "tlg0012", "tlg001", "tlg0012.tlg001.perseus-eng3"),
     "phi0448.phi001": ("canonical-latinLit", "phi0448", "phi001", "phi0448.phi001.perseus-eng2"),
     "phi0690.phi003": ("canonical-latinLit", "phi0690", "phi003", "phi0690.phi003.perseus-eng2"),
     "phi0914.phi001": ("canonical-latinLit", "phi0914", "phi001", "phi0914.phi001.perseus-eng1"),
+}
+TREEBANKS = {
+    "tlg0012.tlg001.perseus-grc1.tb.xml": (
+        "https://raw.githubusercontent.com/PerseusDL/treebank_data/master/"
+        "v2.1/Greek/texts/tlg0012.tlg001.perseus-grc1.tb.xml"
+    ),
 }
 
 
@@ -45,8 +53,10 @@ def edition_urn(document_id: str) -> str | None:
 
 
 def canonical_citation(document_id: str, citation: str) -> str:
-    if re.fullmatch(r"\d+\.\d+-\d+\.\d+", citation):
-        return citation.rsplit(".", 1)[0]
+    match = re.fullmatch(r"(\d+)\.(\d+[a-z]?)-(\d+[a-z]?)\.\d+", citation)
+    if match:
+        book, start, end = match.groups()
+        return f"{book}.{start}-{book}.{end}"
     if edition_key(document_id).startswith("phi") and re.fullmatch(
         r"(?:[^.]+\.)+\d+", citation
     ):
@@ -61,7 +71,31 @@ def fetch_translations(destination: Path) -> int:
         request = urllib.request.Request(url, headers={"User-Agent": "classical-cloze/1"})
         with urllib.request.urlopen(request, timeout=120) as response:
             (destination / f"{filename}.xml").write_bytes(response.read())
+    for filename, url in TREEBANKS.items():
+        request = urllib.request.Request(url, headers={"User-Agent": "classical-cloze/1"})
+        with urllib.request.urlopen(request, timeout=120) as response:
+            (destination / filename).write_bytes(response.read())
     return len(set(EDITIONS.values()))
+
+
+@lru_cache(maxsize=None)
+def treebank_references(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    return {
+        sentence.get("id", ""): sentence.get("subdoc", "")
+        for sentence in ET.parse(path).getroot().iter("sentence")
+        if sentence.get("id") and sentence.get("subdoc")
+    }
+
+
+def canonical_treebank_reference(cache: Path, sent_id: str) -> str | None:
+    if "@" not in sent_id:
+        return None
+    filename, source_id = sent_id.rsplit("@", 1)
+    if filename not in TREEBANKS:
+        return None
+    return treebank_references(cache / filename).get(source_id)
 
 
 def clean_text(value: str) -> str:
@@ -72,11 +106,36 @@ def translator(root: ET.Element) -> str:
     for element in root.findall(f".//{TEI}editor"):
         if element.get("role") == "translator":
             return clean_text("".join(element.itertext()))
+    for statement in root.findall(f".//{TEI}respStmt"):
+        responsibility = " ".join(
+            clean_text("".join(element.itertext()))
+            for element in statement.findall(f"{TEI}resp")
+        )
+        if "translator" in responsibility.casefold():
+            name = statement.find(f"{TEI}name")
+            if name is not None:
+                return clean_text("".join(name.itertext()))
     return "Perseus Digital Library"
 
 
-def split_sentences(text: str) -> list[str]:
-    return [part.strip() for part in re.split(r"(?<=[.!?])\s+(?=[\"'‘“A-Z])", text) if part.strip()]
+EXCLUDED = {f"{TEI}note", f"{TEI}label"}
+
+
+def passage_text(element: ET.Element) -> str:
+    parts: list[str] = []
+
+    def walk(node: ET.Element) -> None:
+        if node.tag in EXCLUDED:
+            return
+        if node.text:
+            parts.append(node.text)
+        for child in node:
+            walk(child)
+            if child.tail:
+                parts.append(child.tail)
+
+    walk(element)
+    return clean_text(" ".join(parts))
 
 
 def milestone_passage(root: ET.Element, reference: str) -> str:
@@ -85,6 +144,8 @@ def milestone_passage(root: ET.Element, reference: str) -> str:
 
     def walk(element: ET.Element) -> None:
         nonlocal collecting
+        if element.tag in EXCLUDED:
+            return
         if element.tag == f"{TEI}milestone" and element.get("unit") in {"section", "page"}:
             marker = element.get("n", "")
             if marker == reference:
@@ -103,29 +164,65 @@ def milestone_passage(root: ET.Element, reference: str) -> str:
     return clean_text(" ".join(parts))
 
 
+def numbered_children(element: ET.Element) -> list[ET.Element]:
+    output = []
+    for child in element:
+        if child.tag != f"{TEI}div":
+            continue
+        if child.get("n") is not None:
+            output.append(child)
+        else:
+            output.extend(numbered_children(child))
+    return output
+
+
 def div_passage(root: ET.Element, parts: list[str]) -> str:
-    candidates = [root]
-    for part in parts:
-        found = [
-            child for parent in candidates for child in parent.iter(f"{TEI}div")
+    if not parts:
+        return ""
+    candidates = [
+        element for element in root.iter(f"{TEI}div")
+        if element.get("n") == parts[0]
+    ]
+    for part in parts[1:]:
+        candidates = [
+            child for parent in candidates for child in numbered_children(parent)
             if child.get("n") == part
         ]
-        if not found:
+        if not candidates:
             return ""
-        candidates = found
-    return clean_text(" ".join(candidates[0].itertext())) if candidates else ""
+    return passage_text(candidates[0]) if candidates else ""
 
 
-def line_passage(root: ET.Element, book: str, start: int, end: int) -> str:
-    books = [element for element in root.iter(f"{TEI}div") if element.get("n") == book]
+def verse_passage(root: ET.Element, book: str, start: str, end: str) -> str:
+    books = [
+        element for element in root.iter(f"{TEI}div")
+        if element.get("subtype", "").casefold() == "book" and element.get("n") == book
+    ]
     if not books:
         return ""
-    lines = []
-    for line in books[0].iter(f"{TEI}l"):
-        number = line.get("n", "")
-        if number.isdigit() and start <= int(number) <= end:
-            lines.append(clean_text("".join(line.itertext())))
-    return clean_text(" ".join(lines))
+    cards = [
+        element for element in books[0].iter(f"{TEI}div")
+        if element.get("subtype") == "card" and element.get("n", "").isdigit()
+    ]
+    selected = []
+    start_number = int(start.rstrip("abcdefghijklmnopqrstuvwxyz"))
+    end_number = int(end.rstrip("abcdefghijklmnopqrstuvwxyz"))
+    for index, card in enumerate(cards):
+        card_start = int(card.get("n", "0"))
+        card_end = int(cards[index + 1].get("n", "0")) - 1 if index + 1 < len(cards) else 10**9
+        if card_start <= end_number and start_number <= card_end:
+            selected.append(passage_text(card))
+    return clean_text(" ".join(selected))
+
+
+def iliad_passage(root: ET.Element, reference: str) -> str:
+    match = re.fullmatch(r"(\d+)\.(\d+)(?:-(?:(\d+)\.)?(\d+))?", reference)
+    if not match:
+        return ""
+    book, start, end_book, end = match.groups()
+    if end_book and end_book != book:
+        return ""
+    return verse_passage(root, book, start, end or start)
 
 
 def lookup(cache: Path, document_id: str, citation: str) -> Translation | None:
@@ -139,23 +236,24 @@ def lookup(cache: Path, document_id: str, citation: str) -> Translation | None:
     root = ET.parse(path).getroot()
     passage = ""
     level = "passage"
-    sentence_number = 0
-    line_match = re.fullmatch(r"(\d+)\.(\d+)-(\d+)\.(\d+)", citation)
+    if edition_key(document_id) == "tlg0012.tlg001":
+        passage = iliad_passage(root, citation)
+        if not passage:
+            return None
+        return Translation(passage, urn, translator(root), level)
+    line_match = re.fullmatch(r"(\d+)\.(\d+[a-z]?)-(\d+[a-z]?)\.(\d+)", citation)
     if line_match:
-        book, start, end, sentence = map(int, line_match.groups())
-        passage = line_passage(root, str(book), start, end)
-        sentence_number = sentence
+        book, start, end, _ = line_match.groups()
+        passage = verse_passage(root, book, start, end)
     elif re.fullmatch(r"\d+[a-z]", citation):
         passage = milestone_passage(root, citation)
     else:
         parts = citation.split(".")
         if parts and parts[-1].isdigit() and edition_key(document_id).startswith("phi"):
-            sentence_number = int(parts.pop())
+            parts.pop()
+        if edition_key(document_id) == "phi0448.phi001" and len(parts) == 3:
+            parts.pop()
         passage = div_passage(root, parts)
-    sentences = split_sentences(passage)
-    if sentence_number and sentence_number <= len(sentences):
-        passage = sentences[sentence_number - 1]
-        level = "sentence"
     if not passage:
         return None
     return Translation(passage, urn, translator(root), level)

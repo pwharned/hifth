@@ -47,10 +47,9 @@ the manifest:
 python -m scripts.classical_cloze.pipeline fetch-translations
 ```
 
-The pipeline aligns translations by canonical section or line range. When a
-source citation also identifies a sentence within that passage, it selects the
-same numbered English sentence; otherwise the card is explicitly tagged as a
-passage-level alignment. Cards without a defensible canonical match remain
+The pipeline aligns translations by canonical section or source-anchored verse
+range. UD Iliad sentence IDs are resolved through the original AGDT treebank's
+canonical `subdoc` references. Cards without a defensible canonical match remain
 tagged `corpus_cloze::translation_missing`. Every supported citation includes
 a link to its CTS passage in the Perseus/Scaife reader, plus translator and
 alignment provenance.
