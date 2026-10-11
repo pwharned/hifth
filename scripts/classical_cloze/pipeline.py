@@ -62,6 +62,17 @@ LATIN_DOCS = {
 }
 
 GLAUX_WORKS = {
+    "0001-001": ("Apollonius Rhodius", "Argonautica"),
+    "0004-001": ("Diogenes Laertius", "Lives of Eminent Philosophers"),
+    "0005-001": ("Theocritus", "Idylls"),
+    "0008-001": ("Athenaeus", "Deipnosophistae"),
+    "0012-001": ("Homer", "Iliad"),
+    "0012-002": ("Homer", "Odyssey"),
+    "0081-001": ("Dionysius of Halicarnassus", "Roman Antiquities"),
+    "0099-001": ("Strabo", "Geography"),
+    "0543-001": ("Polybius", "Histories"),
+    "0542-001": ("Julius Pollux", "Onomasticon"),
+    "0545-001": ("Claudius Aelianus", "On the Nature of Animals"),
     "0059-001": ("Plato", "Euthyphro"),
     "0059-002": ("Plato", "Apology"),
     "0059-003": ("Plato", "Crito"),
@@ -101,6 +112,7 @@ class Token:
     upos: str
     features: dict[str, str]
     space_after: bool = True
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,6 +126,7 @@ class Sentence:
     sentence_id: str
     text: str
     tokens: tuple[Token, ...]
+    translation: str | None = None
 
 
 @dataclass
@@ -275,6 +288,15 @@ def load_corpus(root: Path) -> list[Sentence]:
     latin_json = root / "canonical-latinLit" / "annotated.json"
     if latin_json.exists():
         sentences.extend(read_annotated_json(latin_json))
+    glaux_online = root / "glaux-online.json"
+    if glaux_online.exists():
+        sentences.extend(read_glaux_online(glaux_online))
+    glaux_homer_fuzzy = root / "glaux-homer-fuzzy.json"
+    if glaux_homer_fuzzy.exists():
+        sentences.extend(read_glaux_online(glaux_homer_fuzzy))
+    tesserae_online = root / "tesserae-online.json"
+    if tesserae_online.exists():
+        sentences.extend(read_tesserae_online(tesserae_online))
     return sentences
 
 
@@ -309,6 +331,7 @@ def read_glaux(path: Path) -> Iterable[Sentence]:
             continue
         tokens = []
         reference = ""
+        line_references = []
         for word in element.findall("word"):
             if word.get("artificial"):
                 continue
@@ -323,6 +346,8 @@ def read_glaux(path: Path) -> Iterable[Sentence]:
                     or word.get("div_book")
                     or ""
                 )
+            if word.get("line"):
+                line_references.append(word.get("line", ""))
             tokens.append(Token(
                 form=form, lemma=lemma, upos=AGDT_UPOS.get(postag[0], "X"),
                 features=agdt_features(postag),
@@ -333,6 +358,10 @@ def read_glaux(path: Path) -> Iterable[Sentence]:
                 previous = tokens[index - 1]
                 tokens[index - 1] = Token(previous.form, previous.lemma, previous.upos, previous.features, False)
         if tokens:
+            if line_references:
+                reference = line_references[0]
+                if line_references[-1] != reference:
+                    reference += "-" + line_references[-1]
             yield Sentence(
                 "greek", author, work, "classical", "GLAUx-v2.1",
                 document_id, reference or element.get("id", ""), render_tokens(tokens), tuple(tokens),
@@ -355,12 +384,114 @@ def read_annotated_json(path: Path) -> Iterable[Sentence]:
         )
 
 
+def read_glaux_online(path: Path) -> Iterable[Sentence]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    corpus_name = (
+        "GLAUx-Homer-fuzzy"
+        if payload.get("kind") == "glaux-homer-fuzzy" else "GLAUx-online"
+    )
+    seen = set()
+    for result in payload["results"].values():
+        aliases_by_id = {
+            match["glaux_id"]: (result["searched"],)
+            for example in result["examples"]
+            for match in example.get("matches", [])
+            if result.get("searched")
+        }
+        for example in result["examples"]:
+            key = example["sentence_id"]
+            if key in seen or not example.get("tokens"):
+                continue
+            seen.add(key)
+            tokens = []
+            for item in example["tokens"]:
+                form = item["form"]
+                tokens.append(Token(
+                    form=form,
+                    lemma=item["lemma"],
+                    upos=AGDT_UPOS.get(item["postag"][0], "X"),
+                    features=agdt_features(item["postag"]),
+                    space_after=True,
+                    aliases=aliases_by_id.get(item["glaux_id"], ()),
+                ))
+            for index, token in enumerate(tokens):
+                if token.upos == "PUNCT" and index:
+                    previous = tokens[index - 1]
+                    tokens[index - 1] = Token(
+                        previous.form, previous.lemma, previous.upos,
+                        previous.features, False, previous.aliases,
+                    )
+            yield Sentence(
+                language="greek",
+                author=example["author"],
+                work=example["work"],
+                period="ancient",
+                corpus=corpus_name,
+                document_id=f"glaux:{example['author']}:{example['work']}",
+                sentence_id=str(example["sentence_id"]),
+                text=example["text"],
+                tokens=tuple(tokens),
+                translation=example.get("translation"),
+            )
+
+
+def read_tesserae_online(path: Path) -> Iterable[Sentence]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    seen = set()
+    for result in payload["results"].values():
+        query = result["query"]
+        for example in result["examples"]:
+            text = example["text"]
+            if len(text.split()) > 50:
+                continue
+            key = (example["text_id"], example["locus"], text)
+            if key in seen:
+                continue
+            seen.add(key)
+            forms = example.get("tokens") or re.findall(r"[^\W\d_]+|[^\w\s]", text)
+            highlighted = set(example.get("highlight_indices", []))
+            tokens = []
+            for index, form in enumerate(forms):
+                is_match = index in highlighted or (
+                    result["search_field"] == "word"
+                    and normalize(form, "latin", loose=True)
+                    == normalize(query, "latin", loose=True)
+                )
+                tokens.append(Token(
+                    form=form,
+                    lemma=query if is_match else form,
+                    upos="X" if form.isalpha() else "PUNCT",
+                    features={},
+                    space_after=True,
+                ))
+            for index, token in enumerate(tokens):
+                if token.upos == "PUNCT" and index:
+                    previous = tokens[index - 1]
+                    tokens[index - 1] = Token(
+                        previous.form, previous.lemma, previous.upos,
+                        previous.features, False,
+                    )
+            yield Sentence(
+                language="latin",
+                author=example["author"],
+                work=example.get("title") or example.get("work", ""),
+                period=example.get("era", "ancient").casefold().replace(" ", "_"),
+                corpus="Tesserae-online",
+                document_id=example["text_id"],
+                sentence_id=example["locus"],
+                text=text,
+                tokens=tuple(tokens),
+            )
+
+
 def build_indexes(sentences: Iterable[Sentence]) -> tuple[dict, dict]:
     lemma_index: dict[tuple[str, str], list[tuple[Sentence, int]]] = defaultdict(list)
     form_index: dict[tuple[str, str], list[tuple[Sentence, int]]] = defaultdict(list)
     for sentence in sentences:
         for index, token in enumerate(sentence.tokens):
             lemma_index[(sentence.language, normalize(token.lemma, sentence.language, loose=True))].append((sentence, index))
+            for alias in token.aliases:
+                lemma_index[(sentence.language, normalize(alias, sentence.language, loose=True))].append((sentence, index))
             form_index[(sentence.language, normalize(token.form, sentence.language, loose=True))].append((sentence, index))
     return lemma_index, form_index
 
@@ -392,6 +523,91 @@ def rank(candidate: Candidate) -> tuple[Any, ...]:
 
 def source_terms(front: str, language: str) -> list[str]:
     cleaned = normalize(front, language)
+    if language == "greek":
+        greek = r"\u0370-\u03ff\u1f00-\u1fff"
+        # Dictionary headwords may show their derivational boundary with a
+        # hyphen (e.g. δια-λέγομαι); it is not part of the lexical form.
+        cleaned = re.sub(
+            rf"(?<=[{greek}])[-‐‑](?=[{greek}])", "", cleaned
+        )
+        cleaned = re.sub(
+            r"^(?:mid|pass|act|part|perf|aor|fut|comp)\.?\s+",
+            "", cleaned, flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\((?:[a-z]|[^)]*[a-z][^)]*)\)", " ", cleaned,
+            flags=re.IGNORECASE,
+        )
+        if re.match(rf"^[{greek}]{{1,2}}\.\s", cleaned):
+            return []
+        first, separator, remainder = cleaned.partition(" ")
+        if separator and (
+            re.match(r"(?:1st|2nd|3rd)\b", remainder, re.IGNORECASE)
+            or re.match(
+                r"\b(?:fut|aor|aor2|perf|plup|ipf|pres|imper|inf|part|opt|mid|pass)\.?\b",
+                remainder, re.IGNORECASE,
+            )
+            or (
+                "," in remainder[:80]
+                and re.search(
+                    r"\b(?:fut|aor|aor2|perf|plup|ipf|pres|imper|inf|part|opt|mid|pass)\.?\b",
+                    remainder[:80], re.IGNORECASE,
+                )
+            )
+            or "[select]" in remainder
+        ):
+            cleaned = first
+        elif len(first) >= 3 and re.search(r"\s{2,}", front) and re.search(
+            r"(?:ω|ομαι|μι|μαι|ος|ον|η|α|ις|εύς|οίξ)$", first
+        ):
+            cleaned = cleaned.split(maxsplit=1)[0]
+        else:
+            english = re.search(r"\s+(?=[a-z])", cleaned, flags=re.IGNORECASE)
+            if english and not re.search(rf"[{greek}]", cleaned[english.end():]):
+                cleaned = cleaned[:english.start()]
+    else:
+        if cleaned.startswith("--"):
+            return []
+        english_words = re.findall(r"[a-z]+", cleaned)
+        english_markers = {
+            "and", "are", "before", "for", "from", "that", "the", "then",
+            "this", "to", "was", "were", "when", "with",
+        }
+        if sum(word in english_markers for word in english_words) >= 2:
+            return []
+        cleaned = re.sub(
+            r"\s*\((?:adj|adv|conj|prep|pron|reflex\.? pron|defective verb|"
+            r"indeclinable adj|pl\.[^)]*|[+ ]*(?:acc|abl|dat|gen|nom)\.?(?:,?\s*(?:acc|abl|dat|gen|nom)\.?)*)\)\s*$",
+            "", cleaned, flags=re.IGNORECASE,
+        )
+        if "/" in cleaned and " " not in cleaned.split("/", 1)[0]:
+            cleaned = cleaned.split("/", 1)[0]
+        latin_terms = re.findall(r"[a-zā-ž]+", cleaned, re.IGNORECASE)
+        if latin_terms:
+            first = latin_terms[0]
+            personal_paradigm = (
+                len(latin_terms) == 6
+                and len({term[:2] for term in latin_terms}) <= 2
+            )
+            principal_parts = (
+                len(latin_terms) >= 2
+                and re.search(r"(?:o|or)$", first)
+                and (
+                    re.search(r"(?:re|ri|are|ēre|ere|ire|ari|eri|i)$", latin_terms[1])
+                    or len(latin_terms) >= 3
+                )
+            )
+            dictionary_gender = (
+                len(latin_terms) >= 2
+                and latin_terms[-1] in {"m", "f", "n", "mf", "mn"}
+            )
+            adjective_forms = (
+                len(latin_terms) == 3
+                and latin_terms[1].endswith("is")
+                and latin_terms[2].endswith(("e", "a", "um"))
+            )
+            if principal_parts or personal_paradigm or dictionary_gender or adjective_forms:
+                cleaned = first
     # Imported dictionary records consistently put the headword before the
     # first comma. Taking that explicit field is safer than interpreting a
     # principal-parts list as an attested phrase.
@@ -531,6 +747,12 @@ def cloze_text(candidate: Candidate) -> str:
 
 def citation(candidate: Candidate) -> str:
     sentence = candidate.sentence
+    if sentence.corpus.startswith("GLAUx-"):
+        return (
+            f"{html.escape(sentence.author)}, <i>{html.escape(sentence.work)}</i>, "
+            f'<a href="https://glaux.be/detail.php?id={sentence.sentence_id}">'
+            f"GLAUx sentence {sentence.sentence_id}</a>"
+        )
     if sentence.document_id and not sentence.document_id.startswith(("tlg", "phi")):
         reference = f"{sentence.document_id}; sentence {sentence.sentence_id}"
     else:
@@ -540,6 +762,8 @@ def citation(candidate: Candidate) -> str:
 
 def linked_citation(candidate: Candidate, translation_urn: str | None = None) -> str:
     rendered = citation(candidate)
+    if candidate.sentence.corpus.startswith("GLAUx-"):
+        return rendered
     urn = translation_urn or edition_urn(candidate.sentence.document_id)
     if not urn:
         return rendered
@@ -565,7 +789,7 @@ def candidate_json(candidate: Candidate) -> dict[str, Any]:
         "sentence_id": sentence.sentence_id,
         "match_type": candidate.match_type,
         "score": list(candidate.score),
-        "translation": None,
+        "translation": sentence.translation,
     }
 
 
@@ -591,6 +815,7 @@ def export_source_notes() -> list[dict[str, Any]]:
         output.append({
             "note_id": note["noteId"],
             "front": front,
+            "gloss_html": note["fields"]["Back"]["value"],
             "language": language,
             "original_tags": note["tags"],
             "original_state": "suspended" if queues and all(queue == -1 for queue in queues) else "active",
@@ -598,12 +823,15 @@ def export_source_notes() -> list[dict[str, Any]]:
     return output
 
 
-def build_manifest(corpus_root: Path, pilot_per_language: int) -> dict[str, Any]:
+def build_manifest(
+    corpus_root: Path, pilot_per_language: int,
+    source_notes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     sentences = load_corpus(corpus_root)
     lemma_index, form_index = build_indexes(sentences)
     counts = defaultdict(int)
     entries: list[dict[str, Any]] = []
-    for source in export_source_notes():
+    for source in source_notes if source_notes is not None else export_source_notes():
         candidates, reason = find_candidates(
             source["front"], source["language"], lemma_index, form_index
         )
@@ -619,18 +847,26 @@ def build_manifest(corpus_root: Path, pilot_per_language: int) -> dict[str, Any]
         aligned = lookup(
             TRANSLATION_ROOT, sentence.document_id, sentence.sentence_id
         )
+        translation = aligned.text if aligned else sentence.translation or ""
+        translation_level = aligned.level if aligned else "passage" if sentence.translation else None
         tags = [
             "generated::corpus_cloze", f"language::{source['language']}",
             f"period::{sentence.period}",
             "author::" + re.sub(r"[^a-z0-9]+", "_", sentence.author.casefold()).strip("_"),
-            "corpus_cloze::translation_" + (aligned.level if aligned else "missing"),
+            "corpus_cloze::translation_" + (translation_level or "missing"),
         ]
         entries.append({
             **source,
             "status": "matched",
             "text": cloze_text(primary),
-            "translation": aligned.text if aligned else "",
-            "translation_level": aligned.level if aligned else None,
+            "gloss_html": (
+                '<small><b>Original note (may not describe selected target):</b> '
+                + source.get("gloss_html", "") + "</small>"
+                if sentence.corpus == "GLAUx-Homer-fuzzy"
+                else source.get("gloss_html", "")
+            ),
+            "translation": translation,
+            "translation_level": translation_level,
             "translation_urn": aligned.urn if aligned else None,
             "citation_html": linked_citation(primary, aligned.urn if aligned else None)
             + (f"<br><small>English: {html.escape(aligned.translator)}, Perseus Digital Library ({aligned.level}-level alignment)</small>" if aligned else ""),
@@ -663,27 +899,36 @@ def alternatives_html(alternatives: list[dict[str, Any]]) -> str:
 
 def ensure_model() -> None:
     anki("createDeck", deck=DESTINATION_DECK)
-    if MODEL_NAME in anki("modelNames"):
-        return
     front = "{{cloze:Text}}"
     back = """{{cloze:Text}}
+<div class="gloss">{{Gloss}}</div>
 <div class="translation">{{Translation}}</div>
 <div class="details">{{Morphology}}<br>{{Citation}}</div>
 {{Alternatives}}"""
     css = """.card { font-family: Arial, sans-serif; font-size: 20px; line-height: 1.5; text-align: center; }
 .cloze { color: blue; font-weight: bold; }
 .nightMode .cloze { color: lightblue; }
+.gloss { margin-top: 1rem; font-weight: bold; }
 .translation { margin-top: 1rem; }
 .details { color: #777; font-size: 15px; margin-top: 1rem; }
 details { margin-top: 1rem; text-align: left; }
 li { margin-bottom: .75rem; }"""
-    anki(
-        "createModel", modelName=MODEL_NAME,
-        inOrderFields=["Text", "Translation", "Citation", "Alternatives", "Lemma", "Morphology", "OriginalNoteID"],
-        css=css,
-        isCloze=True,
-        cardTemplates=[{"Name": "Cloze", "Front": front, "Back": back}],
-    )
+    if MODEL_NAME not in anki("modelNames"):
+        anki(
+            "createModel", modelName=MODEL_NAME,
+            inOrderFields=["Text", "Gloss", "Translation", "Citation", "Alternatives", "Lemma", "Morphology", "OriginalNoteID"],
+            css=css,
+            isCloze=True,
+            cardTemplates=[{"Name": "Cloze", "Front": front, "Back": back}],
+        )
+        return
+    if "Gloss" not in anki("modelFieldNames", modelName=MODEL_NAME):
+        anki("modelFieldAdd", modelName=MODEL_NAME, fieldName="Gloss", index=1)
+    anki("updateModelTemplates", model={
+        "name": MODEL_NAME,
+        "templates": {"Cloze": {"Front": front, "Back": back}},
+    })
+    anki("updateModelStyling", model={"name": MODEL_NAME, "css": css})
 
 
 def synthesize(text: str, language: str, media_dir: Path) -> tuple[str, bytes]:
@@ -714,6 +959,7 @@ def write_pilot(manifest_path: Path) -> None:
                 "modelName": MODEL_NAME,
                 "fields": {
                     "Text": f"{entry['text']}[sound:{stored}]",
+                    "Gloss": entry.get("gloss_html", ""),
                     "Translation": entry["translation"],
                     "Citation": entry["citation_html"],
                     "Alternatives": alternatives_html(entry["alternatives"]),
@@ -764,7 +1010,10 @@ def import_existing_replacements(manifest: dict[str, Any]) -> None:
             entry["audio_filename"] = sound.group(1)
             if "_mms_" in sound.group(1):
                 entry["audio_provider"] = MODEL_IDS_FOR_LANGUAGE[entry["language"]]
-                entry["audio_tempo"] = 0.9
+                encoded_tempo = re.search(r"_t(\d+)_", sound.group(1))
+                entry["audio_tempo"] = (
+                    int(encoded_tempo.group(1)) / 100 if encoded_tempo else 0.9
+                )
 
 
 def update_existing_replacements(manifest: dict[str, Any]) -> None:
@@ -778,6 +1027,7 @@ def update_existing_replacements(manifest: dict[str, Any]) -> None:
             "params": {"note": {
                 "id": entry["generated_note_id"],
                 "fields": {
+                    "Gloss": entry.get("gloss_html", ""),
                     "Translation": entry["translation"],
                     "Citation": entry["citation_html"],
                 },
@@ -807,6 +1057,7 @@ def note_payload(entry: dict[str, Any]) -> dict[str, Any]:
         "modelName": MODEL_NAME,
         "fields": {
             "Text": entry["text"],
+            "Gloss": entry.get("gloss_html", ""),
             "Translation": entry["translation"],
             "Citation": entry["citation_html"],
             "Alternatives": alternatives_html(entry["alternatives"]),
@@ -824,6 +1075,9 @@ def write_migration(manifest_path: Path) -> None:
     ensure_model()
     import_existing_replacements(manifest)
     update_existing_replacements(manifest)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     pending = [
         entry for entry in manifest["entries"]
         if entry["status"] == "matched" and not entry.get("generated_note_id")
@@ -886,13 +1140,50 @@ def tag_unmatched(manifest_path: Path) -> None:
             anki("addTags", notes=[entry["note_id"]], tags=f"corpus_cloze::{entry['status']}")
 
 
+def archive_glosses(archive_root: Path) -> dict[int, str]:
+    glosses = {}
+    for path in sorted(archive_root.glob("*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for note in payload.get("notes", []):
+            back = note.get("fields", {}).get("Back", {}).get("value")
+            if back is not None:
+                glosses[note["noteId"]] = back
+    return glosses
+
+
+def backfill_glosses(archive_root: Path) -> dict[str, int]:
+    ensure_model()
+    glosses = archive_glosses(archive_root)
+    note_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')
+    updated = 0
+    missing = 0
+    for batch in chunks(batched_note_info(note_ids), 100):
+        actions = []
+        for note in batch:
+            original = note["fields"].get("OriginalNoteID", {}).get("value", "")
+            gloss = glosses.get(int(original)) if original.isdigit() else None
+            if gloss is None:
+                missing += 1
+                continue
+            actions.append({
+                "action": "updateNoteFields", "version": 6,
+                "params": {"note": {
+                    "id": note["noteId"], "fields": {"Gloss": gloss},
+                }},
+            })
+        if actions:
+            anki("multi", actions=actions)
+            updated += len(actions)
+    return {"updated": updated, "missing": missing, "archived": len(glosses)}
+
+
 def finalize_migration(manifest_path: Path, archive_path: Path) -> None:
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
     matched = [entry for entry in manifest["entries"] if entry["status"] == "matched"]
     unmatched = [entry for entry in manifest["entries"] if entry["status"] != "matched"]
-    if len(matched) != 8412 or len(unmatched) != 1905:
-        raise RuntimeError("refusing to finalize: expected 8,412 matched and 1,905 unmatched notes")
+    if not matched:
+        raise RuntimeError("refusing to finalize: manifest has no matched notes")
 
     source_ids = anki("findNotes", query=f'deck:"{SOURCE_DECK}" note:Basic')
     expected_ids = {entry["note_id"] for entry in manifest["entries"]}
@@ -907,13 +1198,15 @@ def finalize_migration(manifest_path: Path, archive_path: Path) -> None:
         if note["fields"].get("OriginalNoteID", {}).get("value", "").isdigit()
     }
     matched_ids = {entry["note_id"] for entry in matched}
-    if len(destination_notes) != 8412 or set(by_original) != matched_ids:
+    if not matched_ids.issubset(by_original):
         raise RuntimeError("refusing to finalize: replacements do not exactly cover matched originals")
-    destination_cards = anki("findCards", query=f'deck:"{DESTINATION_DECK}"')
+    replacement_note_ids = [by_original[note_id]["noteId"] for note_id in matched_ids]
+    destination_cards = cards_for_notes(replacement_note_ids)
     destination_card_info = anki("cardsInfo", cards=destination_cards)
-    if len(destination_cards) != 8412 or any(card["queue"] == -1 for card in destination_card_info):
-        raise RuntimeError("refusing to finalize: all 8,412 replacements must be active")
-    if any("[sound:" not in note["fields"]["Text"]["value"] for note in destination_notes):
+    if len(destination_cards) != len(matched) or any(card["queue"] == -1 for card in destination_card_info):
+        raise RuntimeError("refusing to finalize: every replacement must be active")
+    matched_replacements = [by_original[note_id] for note_id in matched_ids]
+    if any("[sound:" not in note["fields"]["Text"]["value"] for note in matched_replacements):
         raise RuntimeError("refusing to finalize: every replacement must have audio")
 
     source_notes = batched_note_info(source_ids)
@@ -929,13 +1222,13 @@ def finalize_migration(manifest_path: Path, archive_path: Path) -> None:
         "notes": [note for note in source_notes if note["noteId"] in matched_ids],
         "cards": [card for card in source_card_info if card["note"] in matched_ids],
     }
-    if len(archive["notes"]) != 8412 or len(archive["cards"]) != 8412:
+    if len(archive["notes"]) != len(matched) or len(archive["cards"]) != len(matched):
         raise RuntimeError("refusing to finalize: archive is incomplete")
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     archive_path.write_text(
         json.dumps(archive, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    if len(json.loads(archive_path.read_text(encoding="utf-8"))["notes"]) != 8412:
+    if len(json.loads(archive_path.read_text(encoding="utf-8"))["notes"]) != len(matched):
         raise RuntimeError("refusing to finalize: archive verification failed")
 
     anki("createDeck", deck=UNMATCHED_DECK)
@@ -948,6 +1241,53 @@ def finalize_migration(manifest_path: Path, archive_path: Path) -> None:
     anki("deleteNotes", notes=sorted(matched_ids))
 
 
+def reconcile_after_sync(archive_path: Path) -> dict[str, int]:
+    destination_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')
+    destination_notes = batched_note_info(destination_ids)
+    replaced_originals = {
+        int(note["fields"]["OriginalNoteID"]["value"])
+        for note in destination_notes
+        if note["fields"].get("OriginalNoteID", {}).get("value", "").isdigit()
+    }
+    if not replaced_originals:
+        raise RuntimeError("refusing to reconcile: no replacement OriginalNoteID values found")
+
+    source_ids = anki("findNotes", query=f'deck:"{SOURCE_DECK}" note:Basic')
+    source_notes = batched_note_info(source_ids)
+    to_delete = [note for note in source_notes if note["noteId"] in replaced_originals]
+    to_keep = [note for note in source_notes if note["noteId"] not in replaced_originals]
+    delete_ids = {note["noteId"] for note in to_delete}
+    source_cards = anki("findCards", query=f'deck:"{SOURCE_DECK}" note:Basic')
+    source_card_info = anki("cardsInfo", cards=source_cards)
+    archive = {
+        "schema_version": 1,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "kind": "post-sync-reconciliation",
+        "replacement_count": len(replaced_originals),
+        "notes": to_delete,
+        "cards": [card for card in source_card_info if card["note"] in delete_ids],
+    }
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_path.write_text(
+        json.dumps(archive, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    if len(json.loads(archive_path.read_text(encoding="utf-8"))["notes"]) != len(to_delete):
+        raise RuntimeError("refusing to reconcile: archive verification failed")
+
+    if to_keep:
+        keep_ids = [note["noteId"] for note in to_keep]
+        anki("addTags", notes=keep_ids, tags="corpus_cloze::unmatched")
+        for batch in chunks(keep_ids, 100):
+            anki("changeDeck", cards=cards_for_notes(batch), deck=UNMATCHED_DECK)
+    if delete_ids:
+        anki("deleteNotes", notes=sorted(delete_ids))
+    return {
+        "replacement_notes": len(destination_notes),
+        "deleted_reappeared_originals": len(to_delete),
+        "retained_unmatched_originals": len(to_keep),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -955,6 +1295,10 @@ def main() -> None:
     build.add_argument("--corpora", type=Path, default=Path("data/classical_cloze/corpora"))
     build.add_argument("--output", type=Path, default=Path("data/classical_cloze/pilot.json"))
     build.add_argument("--pilot-per-language", type=int, default=50)
+    build.add_argument(
+        "--source-manifest", type=Path,
+        help="reuse source-note metadata from an existing manifest instead of Anki",
+    )
     write = subparsers.add_parser("write-pilot", help="create suspended notes and audio from a manifest")
     write.add_argument("manifest", type=Path)
     tags = subparsers.add_parser("tag-unmatched", help="tag source notes that the manifest could not match")
@@ -967,9 +1311,23 @@ def main() -> None:
     finalize = subparsers.add_parser("finalize-migration", help="archive/delete matched originals and move residuals")
     finalize.add_argument("manifest", type=Path)
     finalize.add_argument("--archive", type=Path, required=True)
+    glosses = subparsers.add_parser("backfill-glosses", help="restore glosses from archived originals")
+    glosses.add_argument("--archives", type=Path, default=Path("data/classical_cloze/archive"))
+    reconcile = subparsers.add_parser("reconcile-after-sync", help="remove originals restored by a remote download")
+    reconcile.add_argument("--archive", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "build-manifest":
-        manifest = build_manifest(args.corpora, args.pilot_per_language)
+        source_notes = None
+        if args.source_manifest:
+            previous = json.loads(args.source_manifest.read_text(encoding="utf-8"))
+            source_notes = [{
+                **{
+                    key: entry[key]
+                    for key in ("note_id", "front", "language", "original_tags", "original_state")
+                },
+                "gloss_html": entry.get("gloss_html", ""),
+            } for entry in previous["entries"]]
+        manifest = build_manifest(args.corpora, args.pilot_per_language, source_notes)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"output": str(args.output), "matched_counts": manifest["matched_counts"]}))
@@ -983,6 +1341,10 @@ def main() -> None:
         print(json.dumps({"downloaded": fetch_translations(TRANSLATION_ROOT), "directory": str(TRANSLATION_ROOT)}))
     elif args.command == "finalize-migration":
         finalize_migration(args.manifest, args.archive)
+    elif args.command == "backfill-glosses":
+        print(json.dumps(backfill_glosses(args.archives)))
+    elif args.command == "reconcile-after-sync":
+        print(json.dumps(reconcile_after_sync(args.archive)))
     else:
         tag_unmatched(args.manifest)
 

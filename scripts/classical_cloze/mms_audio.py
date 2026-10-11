@@ -1,4 +1,4 @@
-"""Generate 90%-tempo MMS audio and attach it to manifest-backed Anki notes."""
+"""Generate or retime MMS audio and attach it to manifest-backed Anki notes."""
 
 from __future__ import annotations
 
@@ -55,30 +55,48 @@ def generate(manifest_path: Path, tempo: float) -> None:
             language_entries = [entry for entry in entries if entry["language"] == language]
             if not language_entries:
                 continue
-            tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
-            model = transformers.VitsModel.from_pretrained(model_id).eval()
-            if torch.cuda.is_available():
-                model = model.to("cuda")
+            tokenizer = None
+            model = None
             generated = []
             for entry in language_entries:
                 if entry.get("audio_provider") == model_id and entry.get("audio_tempo") == tempo:
                     continue
                 text = unicodedata.normalize("NFKC", entry["primary"]["text"])
                 digest = hashlib.sha256(f"{model_id}\0{tempo}\0{text}".encode()).hexdigest()[:20]
-                filename = f"classical_cloze_mms_{language}_{digest}.wav"
+                filename = f"classical_cloze_mms_{language}_t{round(tempo * 100)}_{digest}.wav"
                 raw_path = temporary_directory / "raw.wav"
                 output_path = cache / filename
                 if not output_path.exists():
-                    inputs = tokenizer(text, return_tensors="pt")
-                    if torch.cuda.is_available():
-                        inputs = {key: value.to("cuda") for key, value in inputs.items()}
-                    transformers.set_seed(555)
-                    with torch.inference_mode():
-                        waveform = model(**inputs).waveform[0].cpu().numpy()
-                    wavfile.write(raw_path, model.config.sampling_rate, waveform)
+                    current_tempo = entry.get("audio_tempo")
+                    current_filename = entry.get("audio_filename")
+                    if (
+                        entry.get("audio_provider") == model_id
+                        and isinstance(current_tempo, (int, float))
+                        and current_filename
+                    ):
+                        encoded = anki("retrieveMediaFile", filename=current_filename)
+                        if not encoded:
+                            raise RuntimeError(f"Anki media is missing: {current_filename}")
+                        raw_path.write_bytes(base64.b64decode(encoded))
+                        filter_tempo = tempo / current_tempo
+                    else:
+                        if model is None:
+                            tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
+                            model = transformers.VitsModel.from_pretrained(model_id).eval()
+                            if torch.cuda.is_available():
+                                model = model.to("cuda")
+                        assert tokenizer is not None and model is not None
+                        inputs = tokenizer(text, return_tensors="pt")
+                        if torch.cuda.is_available():
+                            inputs = {key: value.to("cuda") for key, value in inputs.items()}
+                        transformers.set_seed(555)
+                        with torch.inference_mode():
+                            waveform = model(**inputs).waveform[0].cpu().numpy()
+                        wavfile.write(raw_path, model.config.sampling_rate, waveform)
+                        filter_tempo = tempo
                     subprocess.run([
                         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                        "-i", str(raw_path), "-filter:a", f"atempo={tempo}", str(output_path),
+                        "-i", str(raw_path), "-filter:a", f"atempo={filter_tempo}", str(output_path),
                     ], check=True)
                 generated.append((entry, filename, output_path))
                 if len(generated) >= 10:
@@ -86,8 +104,10 @@ def generate(manifest_path: Path, tempo: float) -> None:
                     generated = []
             if generated:
                 attach_batch(generated, model_id, tempo, manifest, manifest_path)
-            del model
-            if torch.cuda.is_available():
+            used_model = model is not None
+            if used_model:
+                del model
+            if used_model and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
 
@@ -120,7 +140,7 @@ def attach_batch(generated, model_id, tempo, manifest, manifest_path):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", type=Path)
-    parser.add_argument("--tempo", type=float, default=0.9)
+    parser.add_argument("--tempo", type=float, default=0.8)
     args = parser.parse_args()
     if not 0.5 <= args.tempo <= 1.5:
         parser.error("--tempo must be between 0.5 and 1.5")

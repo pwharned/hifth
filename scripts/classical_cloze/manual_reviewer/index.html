@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Classical Card Migration</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">Corpus Cloze Workshop</p>
+      <h1>Manual migration campaign</h1>
+    </div>
+    <div id="progress" class="progress"></div>
+  </header>
+  <main>
+    <section class="original panel">
+      <div class="section-title">
+        <h2>Original note</h2>
+        <span id="language" class="badge"></span>
+      </div>
+      <div id="front" class="front"></div>
+      <div id="back" class="back"></div>
+      <label for="target">Target lemma or form</label>
+      <div class="search-row">
+        <input id="target" autocomplete="off" spellcheck="false">
+        <button id="search">Search corpus</button>
+      </div>
+      <p class="hint">Click a word above or edit the target directly.</p>
+      <div class="actions secondary">
+        <button id="skip" class="quiet">Skip for now</button>
+        <button id="unusable" class="quiet danger">Mark unusable</button>
+      </div>
+    </section>
+    <section class="results panel">
+      <div class="section-title">
+        <h2>Attested examples</h2>
+        <span id="status"></span>
+      </div>
+      <div id="candidates" class="candidates empty">Select a target and search.</div>
+    </section>
+  </main>
+  <template id="candidate-template">
+    <article class="candidate">
+      <button class="sentence"></button>
+      <p class="source"></p>
+      <label>Translation</label>
+      <textarea rows="3"></textarea>
+      <button class="approve">Create and activate card</button>
+    </article>
+  </template>
+  <script src="app.js"></script>
+</body>
+</html>

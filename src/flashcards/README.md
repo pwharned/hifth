@@ -1,4 +1,7 @@
-# Media transcript artifacts
+# Media transcript artifact reference
+
+For the user-facing setup, Japanese batch import, and card-creation workflow,
+see [`docs/MEDIA_FLASHCARDS.md`](../../docs/MEDIA_FLASHCARDS.md).
 
 Python has one responsibility in the generic flashcard workflow: turn media
 into an immutable, timed source-text artifact. It does not host the reviewer,

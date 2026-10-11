@@ -20,6 +20,8 @@ EDITIONS = {
     "0059-030": ("canonical-greekLit", "tlg0059", "tlg030", "tlg0059.tlg030.perseus-eng2"),
     "0086-010": ("canonical-greekLit", "tlg0086", "tlg010", "tlg0086.tlg010.perseus-eng2"),
     "tlg0012.tlg001": ("canonical-greekLit", "tlg0012", "tlg001", "tlg0012.tlg001.perseus-eng3"),
+    "0012-001": ("canonical-greekLit", "tlg0012", "tlg001", "tlg0012.tlg001.perseus-eng3"),
+    "0012-002": ("canonical-greekLit", "tlg0012", "tlg002", "tlg0012.tlg002.perseus-eng3"),
     "phi0448.phi001": ("canonical-latinLit", "phi0448", "phi001", "phi0448.phi001.perseus-eng2"),
     "phi0690.phi003": ("canonical-latinLit", "phi0690", "phi003", "phi0690.phi003.perseus-eng2"),
     "phi0914.phi001": ("canonical-latinLit", "phi0914", "phi001", "phi0914.phi001.perseus-eng1"),
@@ -54,7 +56,7 @@ def edition_urn(document_id: str) -> str | None:
 
 def canonical_citation(document_id: str, citation: str) -> str:
     match = re.fullmatch(r"(\d+)\.(\d+[a-z]?)-(\d+[a-z]?)\.\d+", citation)
-    if match:
+    if edition_key(document_id) == "phi0690.phi003" and match:
         book, start, end = match.groups()
         return f"{book}.{start}-{book}.{end}"
     if edition_key(document_id).startswith("phi") and re.fullmatch(
@@ -236,7 +238,7 @@ def lookup(cache: Path, document_id: str, citation: str) -> Translation | None:
     root = ET.parse(path).getroot()
     passage = ""
     level = "passage"
-    if edition_key(document_id) == "tlg0012.tlg001":
+    if edition_key(document_id) in {"tlg0012.tlg001", "0012-001", "0012-002"}:
         passage = iliad_passage(root, citation)
         if not passage:
             return None

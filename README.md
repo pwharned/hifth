@@ -1,21 +1,19 @@
-# Hifth
+# Hifth language-learning tools
 
-A Quran memorization toolkit built on word-level audio/text alignment.
+This repository contains several independent audio and flashcard workflows:
 
-Raw recitation audio is force-aligned to the Uthmani text with WhisperX,
-producing millisecond-accurate timestamps for every word. That alignment
-data powers two independent outputs:
+1. **General media flashcards** turn subtitled or transcribed audio/video in
+   any supported language into reviewed Anki cloze cards.
+2. **Quran alignment and Anki export** align a chosen reciter with Uthmani text
+   and produce Quarter-Hizb memorization cards.
+3. **Classical Greek and Latin migration** replaces vocabulary notes with
+   attested corpus examples, audio, translations, and citations.
+4. **Legacy Hifth application** is the original Quran study web application.
 
-1. **A full-stack web app** ("Archipelago") — a Scala 3 / ScalaJS study
-   player with an SRS-driven queue (SM-2), an audio-synced player with a
-   progressive cloze mask (0→95%), tap-to-score recall, and streaks —
-   organized around the Quran's 240 Quarter-Hizb (QH) sections.
-2. **An Anki export pipeline** — a standalone Python script that turns the
-   same alignment data into a deck of interactive flashcards (one per QH),
-   without needing any of the app's backend/frontend/SRS machinery.
-
-Both consume the same `data/output/verified/<surah>_aligned.json` files;
-neither depends on the other.
+See the [documentation index](docs/README.md) to choose a workflow. The most
+common entry points are the [media flashcard guide](docs/MEDIA_FLASHCARDS.md),
+the Quran workflow below, and the
+[classical cloze guide](scripts/classical_cloze/README.md).
 
 ## Quran memorization with your preferred reciter
 
@@ -107,7 +105,9 @@ not save cards, progress, transcript edits, or duplicate state; Anki rejects
 duplicate notes naturally. Source text is sent to Google for translation and
 speech generation. The destination deck is selected from Anki's live deck list,
 and a persistent result reports the created note ID or the failure. See
-`src/flashcards/README.md` for the artifact schema and complete workflow.
+the [media flashcard guide](docs/MEDIA_FLASHCARDS.md) for setup, Japanese audio,
+batch imports, card creation, and troubleshooting. See
+`src/flashcards/README.md` for the artifact contract and implementation details.
 
 The reviewer intentionally mirrors Clausula's undocumented `MkEWBc` translation
 RPC and `translate_tts` request rather than using a supported Google API.
@@ -118,7 +118,9 @@ RPC and `translate_tts` request rather than using a supported Google API.
 src/flashcards/       - Python media/subtitle/ASR artifact generator
 src/quran_alignment/ - Python alignment pipeline (normalize → align → validate)
 scripts/             - pipeline runner + Anki deck generator
+  classical_cloze/   - Greek and Latin corpus migration and translation tools
 tests/               - Python artifact/alignment tests
+docs/                - workflow-oriented user documentation
 data/
   raw_audio/         - source MP3s per Surah (001.mp3 ... 114.mp3)
   text/              - cached Uthmani text per Surah
@@ -259,100 +261,9 @@ them and preserves their scheduling. Enable updating existing notes in the
 Anki import options. Changed audio may leave the previous clips unused;
 Anki's **Tools > Check Media** can remove them after import.
 
-## Legacy Hifth web app architecture
+## Legacy Hifth application
 
-The original Quran memorization app is retained under `hifth/` with its own SBT
-build. Its server serves plain HTML pages, while small Scala.js islands mount
-into the page and communicate through one typed WebSocket.
-
-No REST endpoints. No SPA framework. No shared mutable state between islands except through the server.
-
-## Stack
-
-- **Backend**: http4s + cats-effect + fs2
-- **Frontend**: ScalaJS + Laminar
-- **Shared**: Scala 3 cross-compiled domain models and WebSocket protocol
-- **Serialization**: jsoniter-scala
-
-## How it works
-
-The shared module defines the entire client-server contract:
-
-```scala
-enum ClientMessage:
-  case Increment
-  case Decrement
-  case Reset
-
-enum ServerMessage:
-  case CountUpdated(value: Int)
-  case Error(msg: String)
-```
-
-Both sides are bound to this ADT. Adding a new message type is a compile error until both sides handle it.
-
-On the frontend, islands communicate exclusively through `AppBus`:
-
-```scala
-// send
-AppBus.outgoing.emit(ClientMessage.Increment)
-
-// receive
-AppBus.incoming.events.collect:
-  case ServerMessage.CountUpdated(v) => v
-```
-
-Islands know nothing about WebSockets, serialization or connection state. `WsClient` owns the connection and handles reconnection with exponential backoff. Disconnection is surfaced via CSS on `#app-container` - no connection logic leaks into domain islands.
-
-## Running in development
-
-```bash
-cd hifth
-
-# terminal 1 - recompile frontend on change
-sbt '~frontend/fastLinkJS'
-
-# terminal 2 - run backend with filesystem asset serving
-MODE=DEV sbt '~backend/reStart'
-```
-
-Open `http://localhost:8080`.
-
-The browser auto-reloads when the backend restarts via a lightweight SSE endpoint that only exists in dev mode.
-
-## Production build
-
-```bash
-cd hifth
-sbt backend/package
-```
-
-This compiles the frontend with full optimisation, copies the JS output into the backend jar alongside the HTML files, and produces a self-contained artifact. Set `MODE=PROD` (or omit `MODE` entirely) at runtime.
-
-## Adding an island
-
-1. Create a new file in `hifth/frontend/src/main/scala/.../islands/`
-2. Export a mount function:
-
-```scala
-@JSExportTopLevel("mountMyIsland", moduleID = "myisland")
-def mount(el: dom.Element): Unit = ...
-```
-
-3. Add a mount point in your HTML:
-
-```html
-<div id="my-island"></div>
-<script type="module">
-  import { mountMyIsland } from "/js/myisland.js";
-  mountMyIsland(document.getElementById("my-island"));
-</script>
-```
-
-4. Add message types to the shared protocol if needed.
-
-No routing configuration. No new endpoints. The WS handler picks up new message types automatically once they are added to the ADT.
-
-## Adding a backend handler
-
-Implement `MessageHandler[IO, ClientMessage]` and wire it into `WsHandler.make` in `Main.scala`. The handler receives a `publish` function for sending messages to all connected clients and is otherwise free to depend on whatever it needs (database connections, HTTP clients, etc.).
+The original Quran memorization web application remains available as an
+independent SBT build. See [`hifth/README.md`](hifth/README.md) for its commands
+and architecture. It is not required for the Quran Anki export or the general
+media flashcard reviewer.

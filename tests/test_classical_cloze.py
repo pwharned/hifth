@@ -16,6 +16,10 @@ from scripts.classical_cloze.translations import (
     canonical_citation, canonical_treebank_reference, lookup, passage_url,
 )
 from scripts.classical_cloze.annotate_latin import extract_blocks
+from scripts.classical_cloze.manual_campaign import (
+    edit_distance, normalize_latin, rank_related_lemmas, render_glaux, replace_word,
+    safe_lemma_suggestions,
+)
 
 
 def test_normalization_preserves_display_but_supports_lookup_variants():
@@ -28,14 +32,29 @@ def test_normalization_preserves_display_but_supports_lookup_variants():
 def test_dictionary_front_extracts_explicit_headword():
     assert source_terms("sto, stare, steti, status", "latin") == ["sto"]
     assert source_terms("dēnique (adv.)", "latin") == ["dēnique"]
+    assert source_terms("tinguo tinguere tinxi tinctum", "latin") == ["tinguo"]
+    assert source_terms("obliviscor oblivisci oblitus sum", "latin") == ["obliuiscor"]
+    assert source_terms("impleo imples implet implemus impletis implent", "latin") == ["impleo"]
+    assert source_terms("acer acris acre", "latin") == ["acer"]
+    assert source_terms("comes comitis M", "latin") == ["comes"]
+    assert source_terms("cottidie/cotidie", "latin") == ["cottidie"]
+    assert source_terms("--, suī (reflex. pron.)", "latin") == []
     assert source_terms("πολίχνιον, τό, Dim.", "greek") == ["πολίχνιον"]
     assert source_terms("πάνυ γε, πάνυ μὲν οὖν", "greek") == ["πάνυ", "γε"]
+    assert source_terms("αὔω (A)", "greek") == ["αὔω"]
+    assert source_terms("δια-λέγομαι:", "greek") == ["διαλέγομαι"]
+    assert source_terms("Mid. βιάζομαι,", "greek") == ["βιάζομαι"]
+    assert source_terms("φέρω 3rd sg aor opt act", "greek") == ["φέρω"]
+    assert source_terms("γηροβοσκός nourishing", "greek") == ["γηροβοσκόσ"]
+    assert source_terms("κομίζω    πρὸς τοῦτο ἕνα", "greek") == ["κομίζω"]
+    assert source_terms("ἐπ. τινί c. inf.", "greek") == []
+    assert source_terms("η νυ τοι  αυτως", "greek") == ["η", "νυ", "τοι", "αυτωσ"]
 
 
 def test_unmatched_failure_classification():
-    assert unmatched_status("tinguo tinguere tinxi tinctum", "latin") == "unmatched_phrase"
+    assert unmatched_status("tinguo tinguere tinxi tinctum", "latin") == "unmatched"
     assert unmatched_status("dēnique (unusual note)", "latin") == "annotation_unknown"
-    assert unmatched_status("an English grammar explanation with many words that does not represent a concise Latin lexical target at all", "latin") == "unmatched_long_text"
+    assert unmatched_status("an English grammar explanation with many words that does not represent a concise Latin lexical target at all", "latin") == "nonlexical"
 
 
 def test_metadata_excludes_ineligible_sources():
@@ -142,3 +161,30 @@ def test_treebank_sentence_id_resolves_to_canonical_reference(tmp_path: Path):
     assert canonical_treebank_reference(
         tmp_path, "tlg0012.tlg001.perseus-grc1.tb.xml@2274106"
     ) == "1.1-1.7"
+
+
+def test_manual_campaign_clozes_an_exact_word_offset():
+    cloze, target = replace_word("arma virumque cano.", 2)
+    assert cloze == "arma virumque {{c1::cano}}."
+    assert target == "cano"
+    assert normalize_latin("Jūvenis") == normalize_latin("Iūuenis")
+
+
+def test_manual_campaign_accepts_close_greek_lemma_endings_only():
+    assert edit_distance("αερσιποσ", "αερσιπουσ") == 1
+    assert safe_lemma_suggestions(
+        "ἀερσίπος", ["ἀερσίπους", "ἀερσιπέτης", "ἀεροπόρος"]
+    ) == ["ἀερσίπους"]
+    assert rank_related_lemmas(
+        "ἀπεχθρεύω", ["ἀπεχθαίρω", "ἀπεχθάνομαι", "ἀεροπόρος"]
+    ) == ["ἀπεχθαίρω", "ἀπεχθάνομαι"]
+
+
+def test_manual_campaign_clozes_glaux_id_without_offset_drift():
+    words = [
+        {"glaux_id": 1, "word": "οἳ", "form_original": "", "lemma": "ὅς"},
+        {"glaux_id": 2, "word": "ἀερσίποδες", "form_original": "", "lemma": "ἀερσίπους"},
+    ]
+    cloze, target, lemma = render_glaux(words, 2)
+    assert cloze == "οἳ {{c1::ἀερσίποδες}}"
+    assert (target, lemma) == ("ἀερσίποδες", "ἀερσίπους")
