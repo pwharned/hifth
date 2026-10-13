@@ -102,6 +102,22 @@ save drafts or progress.
 Stop the backend and run it again with the next JSON artifact when moving to a
 different recording.
 
+## Batch cards from an SRT
+
+An SRT can also produce simple sentence cards without a media file. This mode
+uses Japanese Google TTS rather than the original program audio. Japanese and
+audio appear on the front; automatic English translation appears on the back.
+
+```bash
+flashcards-batch-srt 001.srt --deck "Anime 001::SRT TTS"
+```
+
+The importer merges cues ending in `→`, removes music and standalone stage
+directions, and creates cards in subtitle order. Translation, TTS, note IDs,
+and progress are cached under `data/srt-batch/`, so interrupted runs resume and
+reruns update existing text rather than creating duplicates. Use a new deck
+outside an old deck hierarchy if you intend to delete the old deck.
+
 ## Privacy and limitations
 
 Selected source text is sent to Google for translation and TTS. Media files do

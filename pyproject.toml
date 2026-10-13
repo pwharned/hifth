@@ -18,6 +18,7 @@ asr = ["faster-whisper>=1.2,<2"]
 flashcards-import-subtitles = "flashcards.subtitles:main"
 flashcards-import-media = "flashcards.import_media:main"
 flashcards-prepare-asr = "flashcards.faster_whisper_backend:main_prepare"
+flashcards-batch-srt = "flashcards.batch_srt:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
