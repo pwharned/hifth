@@ -140,7 +140,7 @@ def generate_text_cards(
     anki.invoke("createDeck", deck=deck)
     media_dir = cache_path.parent / "text-audio"
     media_dir.mkdir(parents=True, exist_ok=True)
-    created = updated = 0
+    created = updated = skipped_duplicates = 0
     width = len(str(len(sentences)))
     for sentence in sentences:
         print(f"\rProcessing sentence {sentence.position}/{len(sentences)}", end="", flush=True)
@@ -178,16 +178,28 @@ def generate_text_cards(
             anki.invoke("updateNoteFields", note={"id": existing[0], "fields": fields})
             updated += 1
         else:
-            anki.invoke("addNote", note={
+            note = {
                 "deckName": deck, "modelName": _safe_model_name(language), "fields": fields,
                 "options": {"allowDuplicate": False},
                 "tags": ["generated::text", f"language::{language}"],
-            })
+            }
+            eligibility = anki.invoke("canAddNotesWithErrorDetail", notes=[note])[0]
+            if not eligibility["canAdd"]:
+                if "duplicate" in (eligibility.get("error") or "").casefold():
+                    skipped_duplicates += 1
+                    continue
+                raise RuntimeError(f"Anki cannot create sentence {sentence.position}: {eligibility['error']}")
+            anki.invoke("addNote", note=note)
             created += 1
     if hasattr(synthesizer, "close"):
         synthesizer.close()
     print()
-    return {"sentences": len(sentences), "created": created, "updated": updated}
+    return {
+        "sentences": len(sentences),
+        "created": created,
+        "updated": updated,
+        "skipped_duplicates": skipped_duplicates,
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> None:

@@ -46,6 +46,10 @@ class FakeAnki:
             self.next_id += 1
             self.notes[self.next_id] = params["note"]["fields"]
             return self.next_id
+        if action == "canAddNotesWithErrorDetail":
+            source = params["notes"][0]["fields"]["Source"]
+            duplicate = any(note["Source"] == source for note in self.notes.values())
+            return [{"canAdd": not duplicate, "error": "cannot create note because it is a duplicate" if duplicate else ""}]
         if action == "updateNoteFields":
             self.notes[params["note"]["id"]].update(params["note"]["fields"])
             return None
@@ -61,7 +65,22 @@ def test_text_generation_is_ordered_and_idempotent(tmp_path):
         cache_path=tmp_path / "cache.json", delay=0,
         anki=anki, translator=FakeTranslator(), synthesizer=FakeSynthesizer(),
     )
-    assert generate_text_cards(source, **options) == {"sentences": 2, "created": 2, "updated": 0}
+    assert generate_text_cards(source, **options) == {
+        "sentences": 2, "created": 2, "updated": 0, "skipped_duplicates": 0,
+    }
     assert [note["Position"] for note in anki.notes.values()] == ["1", "2"]
-    assert generate_text_cards(source, **options) == {"sentences": 2, "created": 0, "updated": 2}
+    assert generate_text_cards(source, **options) == {
+        "sentences": 2, "created": 0, "updated": 2, "skipped_duplicates": 0,
+    }
     assert len(anki.notes) == 2
+
+
+def test_repeated_sentence_is_reported_and_skipped(tmp_path):
+    source = tmp_path / "book.txt"
+    source.write_text("Eadem. Eadem.", encoding="utf-8")
+    result = generate_text_cards(
+        source, language="la", target_language="en", deck="Latin::Book",
+        cache_path=tmp_path / "cache.json", delay=0, anki=FakeAnki(),
+        translator=FakeTranslator(), synthesizer=FakeSynthesizer(),
+    )
+    assert result == {"sentences": 2, "created": 1, "updated": 0, "skipped_duplicates": 1}
