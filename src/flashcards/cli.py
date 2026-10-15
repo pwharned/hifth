@@ -25,6 +25,16 @@ def _parser() -> argparse.ArgumentParser:
     subtitles.add_argument("--cache", type=Path)
     subtitles.add_argument("--delay", type=float, default=0.25)
 
+    text = commands.add_parser("text", help="create ordered sentence cards from UTF-8 text")
+    text.add_argument("path", type=Path)
+    text.add_argument("--language", required=True)
+    text.add_argument("--translate-to", default="en")
+    text.add_argument("--deck", required=True)
+    text.add_argument("--audio", choices=("google", "microsoft", "mms"), default="google")
+    text.add_argument("--voice")
+    text.add_argument("--cache", type=Path)
+    text.add_argument("--delay", type=float, default=0.25)
+
     classical = commands.add_parser("classical", help="classical corpus card workflows")
     classical_commands = classical.add_subparsers(dest="classical_command", required=True)
     migrate = classical_commands.add_parser("migrate")
@@ -93,6 +103,21 @@ def main(argv: Sequence[str] | None = None) -> None:
                 deck_name=args.deck_name,
                 audio=not args.no_audio,
             ).apply()
+        return
+    if args.command == "text":
+        from .recipes import TextBook
+
+        result = TextBook(
+            source=args.path,
+            language=args.language,
+            deck=args.deck,
+            target_language=args.translate_to,
+            audio=args.audio,
+            voice=args.voice,
+            cache=args.cache,
+            delay=args.delay,
+        ).apply()
+        print(json.dumps(result))
         return
 
     from .recipes import SubtitleBatch

@@ -53,3 +53,26 @@ flashcards quran export --qh-start 1 --qh-end 20
 
 Audio repair is independent and idempotent. It derives each clip from the
 current displayed card text, so it can be rerun after manual edits or fixes.
+
+## Plain-text books
+
+Create one ordered, non-cloze card for every sentence in a UTF-8 text file:
+
+```bash
+# Any language supported by Google translation and speech
+uv run flashcards text book.txt --language fr --translate-to en \
+  --audio google --deck "French::Book"
+
+# Ancient Greek or Latin with MMS speech
+uv run --extra classical flashcards text plato.txt --language grc \
+  --translate-to en --audio mms --deck "Greek::Plato"
+
+# Microsoft speech (downloads the optional provider automatically)
+uv run --extra microsoft flashcards text book.txt --language de \
+  --translate-to en --audio microsoft --deck "German::Book"
+```
+
+Paragraphs are split on Unicode sentence punctuation. Nothing is filtered:
+unpunctuated headings and fragments remain cards. Cards contain a zero-padded
+position field and are inserted in source order. Translation and audio are
+cached, and stable sentence IDs make reruns safe.
