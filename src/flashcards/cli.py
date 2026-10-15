@@ -37,6 +37,20 @@ def _parser() -> argparse.ArgumentParser:
     audio = classical_commands.add_parser("repair-audio")
     audio.add_argument("--tempo", type=float, default=0.8)
 
+    quran = commands.add_parser("quran", help="Quran alignment and memorization cards")
+    quran_commands = quran.add_subparsers(dest="quran_command", required=True)
+    align = quran_commands.add_parser("align")
+    align_group = align.add_mutually_exclusive_group(required=True)
+    align_group.add_argument("--surahs", nargs="+", type=int)
+    align_group.add_argument("--all", action="store_true")
+    align.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    export = quran_commands.add_parser("export")
+    export.add_argument("--out", type=Path)
+    export.add_argument("--qh-start", type=int, default=1)
+    export.add_argument("--qh-end", type=int, default=240)
+    export.add_argument("--deck-name", default="Quran::Quarter-Hizb Memorization")
+    export.add_argument("--no-audio", action="store_true")
+
     return parser
 
 
@@ -59,6 +73,24 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         result = recipe.apply() if args.classical_command == "migrate" else recipe.repair_audio()
         print(json.dumps(result))
+        return
+    if args.command == "quran":
+        from .recipes import QuranAlignment, QuranDeck
+
+        if args.quran_command == "align":
+            surahs = tuple(range(1, 115)) if args.all else tuple(args.surahs)
+            result = QuranAlignment(surahs, args.device).apply()
+            print(json.dumps(result))
+            if result["failed"]:
+                raise SystemExit(1)
+        else:
+            QuranDeck(
+                output=args.out,
+                qh_start=args.qh_start,
+                qh_end=args.qh_end,
+                deck_name=args.deck_name,
+                audio=not args.no_audio,
+            ).apply()
         return
 
     from .recipes import SubtitleBatch

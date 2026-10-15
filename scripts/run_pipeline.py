@@ -56,7 +56,7 @@ def run_surah(surah_number: int, device: str, backend_dir: Path) -> bool:
     print(f"\n✅ Surah {surah_number} complete → {dst}")
     return True
 # ── CLI ───────────────────────────────────────────────────────────────────────
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the full alignment pipeline for one or more Surahs."
     )
@@ -86,9 +86,9 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_BACKEND_DIR,
         help=f"Backend surah resource directory. Default: {DEFAULT_BACKEND_DIR}"
     )
-    return parser.parse_args()
-def main() -> None:
-    args   = _parse_args()
+    return parser.parse_args(argv)
+def main(argv: list[str] | None = None) -> None:
+    args   = _parse_args(argv)
     surahs = list(range(1, 115)) if args.all else args.surahs
     invalid = [s for s in surahs if not 1 <= s <= 114]
     if invalid:

@@ -46,6 +46,9 @@ is a reusable source boundary for batch recipes; no separate web app is needed.
 flashcards classical migrate
 flashcards classical repair-audio
 flashcards classical repair-audio --tempo 0.9
+
+flashcards quran align --surahs 1 2 3 --device cuda
+flashcards quran export --qh-start 1 --qh-end 20
 ```
 
 Audio repair is independent and idempotent. It derives each clip from the

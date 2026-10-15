@@ -140,14 +140,14 @@ def build_model() -> genanki.Model:
     )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--qh-start", type=int, default=1)
     parser.add_argument("--qh-end", type=int, default=240)
     parser.add_argument("--no-audio", action="store_true")
     parser.add_argument("--deck-name", default="Quran::Quarter-Hizb Memorization")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     media_dir = args.out.parent / "media"
