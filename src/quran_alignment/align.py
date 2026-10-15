@@ -24,7 +24,6 @@ import json
 import logging
 import argparse
 import time
-import unicodedata
 import re
 from pathlib import Path
 import numpy as np
@@ -98,8 +97,10 @@ def edit_distance(a: str, b: str) -> int:
     Standard Levenshtein edit distance between two strings.
     Operates on the stripped forms passed in.
     """
-    if not a: return len(b)
-    if not b: return len(a)
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
     prev = list(range(len(b) + 1))
     for i, ca in enumerate(a):
         curr = [i + 1]
@@ -119,8 +120,10 @@ def similarity_score(transcript_word: str, canonical_word: str) -> float:
     """
     a = strip_diacritics(transcript_word)
     b = strip_diacritics(canonical_word)
-    if not a and not b: return 1.0
-    if not a or not b:  return 0.0
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
     max_len = max(len(a), len(b))
     dist    = edit_distance(a, b)
     return 1.0 - dist / max_len
@@ -739,7 +742,7 @@ def run_alignment(
     audio_duration_s = len(audio) / SAMPLE_RATE
     log.info(f"Audio      : {audio_duration_s:.1f}s ({audio_duration_s/60:.1f} min)")
     # ── Step 3: Detect silence + split ──────────────────────────────────────
-    log.info(f"Silence    : Scanning...")
+    log.info("Silence    : Scanning...")
     silence_boundaries = _find_silence_boundaries(audio)
     log.info(f"Silence    : {len(silence_boundaries)} boundaries found")
     chunks = _split_audio_at_silences(audio, chunk_duration_s, silence_boundaries)
@@ -753,7 +756,7 @@ def run_alignment(
         language=LANGUAGE
     )
     # ── Step 5: Pass 1 - Free transcription per chunk ───────────────────────
-    log.info(f"Pass 1     : Free transcription")
+    log.info("Pass 1     : Free transcription")
     all_transcript_words: list[dict] = []
     t_start = time.time()
     for i, (chunk_audio, chunk_offset_s) in enumerate(chunks):
@@ -776,12 +779,12 @@ def run_alignment(
     del whisper_model
     _release_memory()
     # ── Step 6: Load alignment model ────────────────────────────────────────
-    log.info(f"Model      : Loading WhisperX alignment model (Arabic)")
+    log.info("Model      : Loading WhisperX alignment model (Arabic)")
     model_a, metadata = whisperx.load_align_model(
         language_code=LANGUAGE, device=device
     )
     # ── Step 7: Pass 2 - Forced alignment of transcript per chunk ───────────
-    log.info(f"Pass 2     : Forced alignment of transcript")
+    log.info("Pass 2     : Forced alignment of transcript")
     refined_transcript: list[dict] = []
     t_start = time.time()
     for i, (chunk_audio, chunk_offset_s) in enumerate(chunks):
@@ -827,7 +830,7 @@ def run_alignment(
     del model_a
     _release_memory()
     # ── Step 8: Map transcript → canonical ──────────────────────────────────
-    log.info(f"Mapping    : Transcript → canonical Uthmani")
+    log.info("Mapping    : Transcript → canonical Uthmani")
     t_start = time.time()
     t_start  = time.time()
     resolved = map_transcript_to_canonical(

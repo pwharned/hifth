@@ -31,17 +31,21 @@ from pathlib import Path
 
 import genanki
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "src"))
-sys.path.insert(0, str(Path(__file__).parent))
-from anki_export import quran_data as qd
-from anki_export import mask_engine
-from anki_export.templates import CSS, FRONT_TEMPLATE, BACK_TEMPLATE
 from flashcards.media import (
     MediaProcessingError,
     concat_audio as concat_media_audio,
     trim_audio as trim_media_audio,
 )
+try:
+    from scripts.anki_export import mask_engine
+    from scripts.anki_export import quran_data as qd
+    from scripts.anki_export.templates import BACK_TEMPLATE, CSS, FRONT_TEMPLATE
+except ModuleNotFoundError:  # Support direct execution of this legacy script.
+    from anki_export import mask_engine
+    from anki_export import quran_data as qd
+    from anki_export.templates import BACK_TEMPLATE, CSS, FRONT_TEMPLATE
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VERIFIED_DIR = REPO_ROOT / "data" / "output" / "verified"
 AUDIO_DIR = REPO_ROOT / "data" / "processed_audio"

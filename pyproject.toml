@@ -24,8 +24,9 @@ flashcards-batch-srt = "flashcards.batch_srt:main"
 flashcards-batch-ass = "flashcards.batch_ass:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
-include = ["flashcards*", "quran_alignment*"]
+where = ["src", "."]
+include = ["flashcards*", "quran_alignment*", "scripts*"]
+exclude = ["scripts.classical_cloze.manual_reviewer"]
 
 [tool.setuptools.package-data]
 flashcards = ["schema/*.json"]

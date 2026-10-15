@@ -17,8 +17,7 @@ import argparse
 from pathlib import Path
 from src.quran_alignment.align import (
     map_transcript_to_canonical,
-    fetch_uthmani_text,
-    SAMPLE_RATE
+    fetch_uthmani_text
 )
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -68,7 +67,7 @@ def run_remap(
         audio_duration_s = 0.0
         log.warning("No transcript words found — positional anchoring disabled")
     # ── Run mapping ───────────────────────────────────────────────────────────
-    log.info(f"Mapping    : Transcript → canonical Uthmani")
+    log.info("Mapping    : Transcript → canonical Uthmani")
     resolved = map_transcript_to_canonical(
         transcript_words = transcript_words,
         canonical_words  = canonical_words,

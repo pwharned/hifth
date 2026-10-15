@@ -244,7 +244,7 @@ def validate_surah(
             )
     # ── Promotion decision ────────────────────────────────────────────────────
     if hard_failures:
-        log.error(f"Result     : FAILED - file not promoted")
+        log.error("Result     : FAILED - file not promoted")
         log.error(f"           : Fix the {len(hard_failures)} hard failure(s) before re-running")
     else:
         verified_dir.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,7 @@ import re
 import unicodedata
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 

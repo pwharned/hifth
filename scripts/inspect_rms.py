@@ -26,7 +26,7 @@ def inspect(audio_path: Path) -> None:
     print(f"  Mean   : {rms_array.mean():.5f}")
     print(f"  Median : {np.median(rms_array):.5f}")
     thresholds = [0.001, 0.005, 0.01, 0.02, 0.05]
-    print(f"\nWindows below each threshold (i.e. counted as silence):")
+    print("\nWindows below each threshold (i.e. counted as silence):")
     for t in thresholds:
         count = int((rms_array < t).sum())
         pct   = count / len(rms_array) * 100
