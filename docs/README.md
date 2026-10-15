@@ -13,10 +13,10 @@ Choose the workflow that matches the material you want to study.
 ## Technical References
 
 - [Media artifact contract](../src/flashcards/README.md)
-- [Media reviewer architecture](../media-reviewer/README.md)
+- [Media artifact contract](../src/flashcards/schema/media-artifact-v1.schema.json)
 - [Quran Anki export details](../scripts/anki_export/README.md)
 - [Classical corpus coverage](../scripts/classical_cloze/EXPANDED_REPORT.md)
 - [Classical unmatched-card analysis](../scripts/classical_cloze/UNMATCHED_ANALYSIS.md)
 
-The repository root is the SBT build for the media reviewer. The legacy Hifth
-application under `hifth/` has a separate SBT build.
+The Python package provides the batch flashcard API and command line application.
+The legacy Hifth application under `hifth/` has an independent SBT build.

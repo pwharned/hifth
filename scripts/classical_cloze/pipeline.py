@@ -1,22 +1,17 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import datetime
-import hashlib
 import html
 import json
 import re
-import shutil
-import subprocess
-import tempfile
 import unicodedata
-import urllib.request
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+from flashcards.adapters import AnkiConnect
 
 from scripts.classical_cloze.translations import (
     canonical_citation, canonical_treebank_reference, edition_urn,
@@ -25,6 +20,7 @@ from scripts.classical_cloze.translations import (
 
 
 ANKI_URL = "http://127.0.0.1:8765"
+_ANKI = AnkiConnect(ANKI_URL)
 SOURCE_DECK = "Greek and Latin"
 DESTINATION_DECK = "Greek and Latin::Corpus Cloze"
 UNMATCHED_DECK = "Greek and Latin::Unmatched Originals"
@@ -143,15 +139,7 @@ class Candidate:
 
 
 def anki(action: str, **params: Any) -> Any:
-    payload = json.dumps({"action": action, "version": 6, "params": params}).encode()
-    request = urllib.request.Request(
-        ANKI_URL, data=payload, headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        result = json.load(response)
-    if result.get("error"):
-        raise RuntimeError(f"AnkiConnect {action}: {result['error']}")
-    return result["result"]
+    return _ANKI.invoke(action, **params)
 
 
 def strip_html(value: str) -> str:
@@ -793,12 +781,6 @@ def candidate_json(candidate: Candidate) -> dict[str, Any]:
     }
 
 
-def note_state(note_id: int) -> str:
-    cards = anki("findCards", query=f"nid:{note_id}")
-    info = anki("cardsInfo", cards=cards)
-    return "suspended" if info and all(card["queue"] == -1 for card in info) else "active"
-
-
 def export_source_notes() -> list[dict[str, Any]]:
     note_ids = anki("findNotes", query=f'deck:"{SOURCE_DECK}" note:Basic')
     notes = anki("notesInfo", notes=note_ids)
@@ -821,70 +803,6 @@ def export_source_notes() -> list[dict[str, Any]]:
             "original_state": "suspended" if queues and all(queue == -1 for queue in queues) else "active",
         })
     return output
-
-
-def build_manifest(
-    corpus_root: Path, pilot_per_language: int,
-    source_notes: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    sentences = load_corpus(corpus_root)
-    lemma_index, form_index = build_indexes(sentences)
-    counts = defaultdict(int)
-    entries: list[dict[str, Any]] = []
-    for source in source_notes if source_notes is not None else export_source_notes():
-        candidates, reason = find_candidates(
-            source["front"], source["language"], lemma_index, form_index
-        )
-        if not candidates:
-            status = unmatched_status(source["front"], source["language"])
-            entries.append({**source, "status": status if reason == "unmatched" else reason, "candidates": []})
-            continue
-        if counts[source["language"]] >= pilot_per_language:
-            continue
-        primary = candidates[0]
-        alternatives = candidates[1:6]
-        sentence = primary.sentence
-        aligned = lookup(
-            TRANSLATION_ROOT, sentence.document_id, sentence.sentence_id
-        )
-        translation = aligned.text if aligned else sentence.translation or ""
-        translation_level = aligned.level if aligned else "passage" if sentence.translation else None
-        tags = [
-            "generated::corpus_cloze", f"language::{source['language']}",
-            f"period::{sentence.period}",
-            "author::" + re.sub(r"[^a-z0-9]+", "_", sentence.author.casefold()).strip("_"),
-            "corpus_cloze::translation_" + (translation_level or "missing"),
-        ]
-        entries.append({
-            **source,
-            "status": "matched",
-            "text": cloze_text(primary),
-            "gloss_html": (
-                '<small><b>Original note (may not describe selected target):</b> '
-                + source.get("gloss_html", "") + "</small>"
-                if sentence.corpus == "GLAUx-Homer-fuzzy"
-                else source.get("gloss_html", "")
-            ),
-            "translation": translation,
-            "translation_level": translation_level,
-            "translation_urn": aligned.urn if aligned else None,
-            "citation_html": linked_citation(primary, aligned.urn if aligned else None)
-            + (f"<br><small>English: {html.escape(aligned.translator)}, Perseus Digital Library ({aligned.level}-level alignment)</small>" if aligned else ""),
-            "lemma": primary.sentence.tokens[primary.start].lemma,
-            "morphology_html": morphology(primary),
-            "tags": tags,
-            "primary": candidate_json(primary),
-            "alternatives": [candidate_json(item) for item in alternatives],
-        })
-        counts[source["language"]] += 1
-    return {
-        "schema_version": 1,
-        "kind": "classical-cloze-pilot",
-        "pilot_per_language": pilot_per_language,
-        "corpus_sentence_count": len(sentences),
-        "matched_counts": dict(counts),
-        "entries": entries,
-    }
 
 
 def alternatives_html(alternatives: list[dict[str, Any]]) -> str:
@@ -931,54 +849,6 @@ li { margin-bottom: .75rem; }"""
     anki("updateModelStyling", model={"name": MODEL_NAME, "css": css})
 
 
-def synthesize(text: str, language: str, media_dir: Path) -> tuple[str, bytes]:
-    executable = shutil.which("espeak-ng") or shutil.which("espeak")
-    if not executable:
-        raise RuntimeError("eSpeak NG is required (install espeak-ng)")
-    voice = "grc" if language == "greek" else "la"
-    digest = hashlib.sha256(f"{voice}\0{text}".encode()).hexdigest()[:20]
-    filename = f"classical_cloze_{voice}_{digest}.wav"
-    path = media_dir / filename
-    subprocess.run([executable, "-v", voice, "-w", str(path), text], check=True)
-    return filename, path.read_bytes()
-
-
-def write_pilot(manifest_path: Path) -> None:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    ensure_model()
-    with tempfile.TemporaryDirectory() as directory:
-        media_dir = Path(directory)
-        for entry in manifest["entries"]:
-            if entry["status"] != "matched" or entry.get("generated_note_id"):
-                continue
-            plain_text = entry["primary"]["text"]
-            filename, audio = synthesize(plain_text, entry["language"], media_dir)
-            stored = anki("storeMediaFile", filename=filename, data=base64.b64encode(audio).decode())
-            note_id = anki("addNote", note={
-                "deckName": DESTINATION_DECK,
-                "modelName": MODEL_NAME,
-                "fields": {
-                    "Text": f"{entry['text']}[sound:{stored}]",
-                    "Gloss": entry.get("gloss_html", ""),
-                    "Translation": entry["translation"],
-                    "Citation": entry["citation_html"],
-                    "Alternatives": alternatives_html(entry["alternatives"]),
-                    "Lemma": entry["lemma"],
-                    "Morphology": entry["morphology_html"],
-                    "OriginalNoteID": str(entry["note_id"]),
-                },
-                "options": {"allowDuplicate": False},
-                "tags": entry["tags"],
-            })
-            cards = anki("findCards", query=f"nid:{note_id}")
-            anki("suspend", cards=cards)
-            entry["generated_note_id"] = note_id
-            entry["audio_filename"] = stored
-            manifest_path.write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-
-
 def chunks(items: list[Any], size: int) -> Iterable[list[Any]]:
     for start in range(0, len(items), size):
         yield items[start:start + size]
@@ -991,115 +861,6 @@ def batched_note_info(note_ids: list[int]) -> list[dict[str, Any]]:
     ]
 
 
-def import_existing_replacements(manifest: dict[str, Any]) -> None:
-    existing_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')
-    if not existing_ids:
-        return
-    by_original = {}
-    for note in anki("notesInfo", notes=existing_ids):
-        original = note["fields"].get("OriginalNoteID", {}).get("value", "")
-        if original.isdigit():
-            by_original[int(original)] = note
-    for entry in manifest["entries"]:
-        note = by_original.get(entry["note_id"])
-        if note is None:
-            continue
-        entry["generated_note_id"] = note["noteId"]
-        sound = re.search(r"\[sound:([^]]+)\]", note["fields"]["Text"]["value"])
-        if sound:
-            entry["audio_filename"] = sound.group(1)
-            if "_mms_" in sound.group(1):
-                entry["audio_provider"] = MODEL_IDS_FOR_LANGUAGE[entry["language"]]
-                encoded_tempo = re.search(r"_t(\d+)_", sound.group(1))
-                entry["audio_tempo"] = (
-                    int(encoded_tempo.group(1)) / 100 if encoded_tempo else 0.9
-                )
-
-
-def update_existing_replacements(manifest: dict[str, Any]) -> None:
-    entries = [
-        entry for entry in manifest["entries"]
-        if entry.get("generated_note_id") and entry["status"] == "matched"
-    ]
-    for batch in chunks(entries, 100):
-        actions = [{
-            "action": "updateNoteFields", "version": 6,
-            "params": {"note": {
-                "id": entry["generated_note_id"],
-                "fields": {
-                    "Gloss": entry.get("gloss_html", ""),
-                    "Translation": entry["translation"],
-                    "Citation": entry["citation_html"],
-                },
-            }},
-        } for entry in batch]
-        anki("multi", actions=actions)
-        note_ids = [entry["generated_note_id"] for entry in batch]
-        anki("removeTags", notes=note_ids, tags="corpus_cloze::translation_missing corpus_cloze::translation_passage corpus_cloze::translation_sentence")
-        for level in ("missing", "passage", "sentence"):
-            ids = [
-                entry["generated_note_id"] for entry in batch
-                if (entry.get("translation_level") or "missing") == level
-            ]
-            if ids:
-                anki("addTags", notes=ids, tags=f"corpus_cloze::translation_{level}")
-
-
-MODEL_IDS_FOR_LANGUAGE = {
-    "greek": "facebook/mms-tts-grc",
-    "latin": "facebook/mms-tts-lat",
-}
-
-
-def note_payload(entry: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "deckName": DESTINATION_DECK,
-        "modelName": MODEL_NAME,
-        "fields": {
-            "Text": entry["text"],
-            "Gloss": entry.get("gloss_html", ""),
-            "Translation": entry["translation"],
-            "Citation": entry["citation_html"],
-            "Alternatives": alternatives_html(entry["alternatives"]),
-            "Lemma": entry["lemma"],
-            "Morphology": entry["morphology_html"],
-            "OriginalNoteID": str(entry["note_id"]),
-        },
-        "options": {"allowDuplicate": True},
-        "tags": entry["tags"],
-    }
-
-
-def write_migration(manifest_path: Path) -> None:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    ensure_model()
-    import_existing_replacements(manifest)
-    update_existing_replacements(manifest)
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    pending = [
-        entry for entry in manifest["entries"]
-        if entry["status"] == "matched" and not entry.get("generated_note_id")
-    ]
-    for batch in chunks(pending, 100):
-        note_ids = anki("addNotes", notes=[note_payload(entry) for entry in batch])
-        if any(note_id is None for note_id in note_ids):
-            raise RuntimeError("Anki rejected one or more migration notes")
-        actions = [
-            {"action": "findCards", "version": 6, "params": {"query": f"nid:{note_id}"}}
-            for note_id in note_ids
-        ]
-        card_results = anki("multi", actions=actions)
-        cards = [card for result in card_results for card in result["result"]]
-        anki("suspend", cards=cards)
-        for entry, note_id in zip(batch, note_ids, strict=True):
-            entry["generated_note_id"] = note_id
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-
-
 def cards_for_notes(note_ids: list[int]) -> list[int]:
     actions = [
         {"action": "findCards", "version": 6, "params": {"query": f"nid:{note_id}"}}
@@ -1109,244 +870,156 @@ def cards_for_notes(note_ids: list[int]) -> list[int]:
     return [card for result in results for card in result["result"]]
 
 
-def commit_migration(manifest_path: Path) -> None:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    completed = [
-        entry for entry in manifest["entries"]
-        if entry["status"] == "matched" and entry.get("generated_note_id")
-        and entry.get("audio_provider") == MODEL_IDS_FOR_LANGUAGE[entry["language"]]
-    ]
-    if len(completed) != sum(manifest["matched_counts"].values()):
-        raise RuntimeError("refusing to commit: not every matched note has MMS audio")
-    for batch in chunks(completed, 100):
-        original_ids = [entry["note_id"] for entry in batch]
-        generated_active = [
-            entry["generated_note_id"] for entry in batch if entry["original_state"] == "active"
-        ]
-        anki("addTags", notes=original_ids, tags="corpus_cloze::replaced")
-        anki("suspend", cards=cards_for_notes(original_ids))
-        if generated_active:
-            anki("unsuspend", cards=cards_for_notes(generated_active))
-    manifest["migration_committed"] = True
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+CORPUS_ROOT = Path("data/classical_cloze/corpora")
+ARCHIVE_PATH = Path("data/classical_cloze/archive/migrated-originals.json")
 
 
-def tag_unmatched(manifest_path: Path) -> None:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    for entry in manifest["entries"]:
-        if entry["status"] != "matched":
-            anki("addTags", notes=[entry["note_id"]], tags=f"corpus_cloze::{entry['status']}")
-
-
-def archive_glosses(archive_root: Path) -> dict[int, str]:
-    glosses = {}
-    for path in sorted(archive_root.glob("*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        for note in payload.get("notes", []):
-            back = note.get("fields", {}).get("Back", {}).get("value")
-            if back is not None:
-                glosses[note["noteId"]] = back
-    return glosses
-
-
-def backfill_glosses(archive_root: Path) -> dict[str, int]:
-    ensure_model()
-    glosses = archive_glosses(archive_root)
-    note_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')
-    updated = 0
-    missing = 0
-    for batch in chunks(batched_note_info(note_ids), 100):
-        actions = []
-        for note in batch:
-            original = note["fields"].get("OriginalNoteID", {}).get("value", "")
-            gloss = glosses.get(int(original)) if original.isdigit() else None
-            if gloss is None:
-                missing += 1
-                continue
-            actions.append({
-                "action": "updateNoteFields", "version": 6,
-                "params": {"note": {
-                    "id": note["noteId"], "fields": {"Gloss": gloss},
-                }},
-            })
-        if actions:
-            anki("multi", actions=actions)
-            updated += len(actions)
-    return {"updated": updated, "missing": missing, "archived": len(glosses)}
-
-
-def finalize_migration(manifest_path: Path, archive_path: Path) -> None:
-    manifest_bytes = manifest_path.read_bytes()
-    manifest = json.loads(manifest_bytes)
-    matched = [entry for entry in manifest["entries"] if entry["status"] == "matched"]
-    unmatched = [entry for entry in manifest["entries"] if entry["status"] != "matched"]
-    if not matched:
-        raise RuntimeError("refusing to finalize: manifest has no matched notes")
-
-    source_ids = anki("findNotes", query=f'deck:"{SOURCE_DECK}" note:Basic')
-    expected_ids = {entry["note_id"] for entry in manifest["entries"]}
-    if set(source_ids) != expected_ids:
-        raise RuntimeError("refusing to finalize: source deck does not exactly match the manifest")
-
-    destination_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')
-    destination_notes = batched_note_info(destination_ids)
-    by_original = {
-        int(note["fields"]["OriginalNoteID"]["value"]): note
-        for note in destination_notes
-        if note["fields"].get("OriginalNoteID", {}).get("value", "").isdigit()
-    }
-    matched_ids = {entry["note_id"] for entry in matched}
-    if not matched_ids.issubset(by_original):
-        raise RuntimeError("refusing to finalize: replacements do not exactly cover matched originals")
-    replacement_note_ids = [by_original[note_id]["noteId"] for note_id in matched_ids]
-    destination_cards = cards_for_notes(replacement_note_ids)
-    destination_card_info = anki("cardsInfo", cards=destination_cards)
-    if len(destination_cards) != len(matched) or any(card["queue"] == -1 for card in destination_card_info):
-        raise RuntimeError("refusing to finalize: every replacement must be active")
-    matched_replacements = [by_original[note_id] for note_id in matched_ids]
-    if any("[sound:" not in note["fields"]["Text"]["value"] for note in matched_replacements):
-        raise RuntimeError("refusing to finalize: every replacement must have audio")
-
-    source_notes = batched_note_info(source_ids)
-    source_cards = anki("findCards", query=f'deck:"{SOURCE_DECK}" note:Basic')
-    source_card_info = anki("cardsInfo", cards=source_cards)
-    archive = {
-        "schema_version": 1,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "manifest": str(manifest_path),
-        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-        "source_deck": SOURCE_DECK,
-        "matched_count": len(matched),
-        "notes": [note for note in source_notes if note["noteId"] in matched_ids],
-        "cards": [card for card in source_card_info if card["note"] in matched_ids],
-    }
-    if len(archive["notes"]) != len(matched) or len(archive["cards"]) != len(matched):
-        raise RuntimeError("refusing to finalize: archive is incomplete")
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
-    archive_path.write_text(
-        json.dumps(archive, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    if len(json.loads(archive_path.read_text(encoding="utf-8"))["notes"]) != len(matched):
-        raise RuntimeError("refusing to finalize: archive verification failed")
-
-    anki("createDeck", deck=UNMATCHED_DECK)
-    for status in sorted({entry["status"] for entry in unmatched}):
-        ids = [entry["note_id"] for entry in unmatched if entry["status"] == status]
-        anki("addTags", notes=ids, tags=f"corpus_cloze::unmatched corpus_cloze::{status}")
-    for batch in chunks([entry["note_id"] for entry in unmatched], 100):
-        anki("changeDeck", cards=cards_for_notes(batch), deck=UNMATCHED_DECK)
-
-    anki("deleteNotes", notes=sorted(matched_ids))
-
-
-def reconcile_after_sync(archive_path: Path) -> dict[str, int]:
-    destination_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')
-    destination_notes = batched_note_info(destination_ids)
-    replaced_originals = {
-        int(note["fields"]["OriginalNoteID"]["value"])
-        for note in destination_notes
-        if note["fields"].get("OriginalNoteID", {}).get("value", "").isdigit()
-    }
-    if not replaced_originals:
-        raise RuntimeError("refusing to reconcile: no replacement OriginalNoteID values found")
-
-    source_ids = anki("findNotes", query=f'deck:"{SOURCE_DECK}" note:Basic')
-    source_notes = batched_note_info(source_ids)
-    to_delete = [note for note in source_notes if note["noteId"] in replaced_originals]
-    to_keep = [note for note in source_notes if note["noteId"] not in replaced_originals]
-    delete_ids = {note["noteId"] for note in to_delete}
-    source_cards = anki("findCards", query=f'deck:"{SOURCE_DECK}" note:Basic')
-    source_card_info = anki("cardsInfo", cards=source_cards)
-    archive = {
-        "schema_version": 1,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "kind": "post-sync-reconciliation",
-        "replacement_count": len(replaced_originals),
-        "notes": to_delete,
-        "cards": [card for card in source_card_info if card["note"] in delete_ids],
-    }
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
-    archive_path.write_text(
-        json.dumps(archive, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    if len(json.loads(archive_path.read_text(encoding="utf-8"))["notes"]) != len(to_delete):
-        raise RuntimeError("refusing to reconcile: archive verification failed")
-
-    if to_keep:
-        keep_ids = [note["noteId"] for note in to_keep]
-        anki("addTags", notes=keep_ids, tags="corpus_cloze::unmatched")
-        for batch in chunks(keep_ids, 100):
-            anki("changeDeck", cards=cards_for_notes(batch), deck=UNMATCHED_DECK)
-    if delete_ids:
-        anki("deleteNotes", notes=sorted(delete_ids))
+def replacement_note(source: dict[str, Any], candidates: list[Candidate]) -> dict[str, Any]:
+    primary, alternatives = candidates[0], candidates[1:6]
+    sentence = primary.sentence
+    aligned = lookup(TRANSLATION_ROOT, sentence.document_id, sentence.sentence_id)
+    level = aligned.level if aligned else "passage" if sentence.translation else None
+    gloss = source["gloss_html"]
+    if sentence.corpus == "GLAUx-Homer-fuzzy":
+        gloss = f"<small><b>Original note (may not describe selected target):</b> {gloss}</small>"
+    citation_html = linked_citation(primary, aligned.urn if aligned else None)
+    if aligned:
+        citation_html += (
+            f"<br><small>English: {html.escape(aligned.translator)}, "
+            f"Perseus Digital Library ({aligned.level}-level alignment)</small>"
+        )
     return {
-        "replacement_notes": len(destination_notes),
-        "deleted_reappeared_originals": len(to_delete),
-        "retained_unmatched_originals": len(to_keep),
+        "deckName": DESTINATION_DECK,
+        "modelName": MODEL_NAME,
+        "fields": {
+            "Text": cloze_text(primary),
+            "Gloss": gloss,
+            "Translation": aligned.text if aligned else sentence.translation or "",
+            "Citation": citation_html,
+            "Alternatives": alternatives_html([candidate_json(item) for item in alternatives]),
+            "Lemma": sentence.tokens[primary.start].lemma,
+            "Morphology": morphology(primary),
+            "OriginalNoteID": str(source["note_id"]),
+        },
+        "options": {"allowDuplicate": True},
+        "tags": [
+            "generated::corpus_cloze", f"language::{source['language']}",
+            f"period::{sentence.period}",
+            "author::" + re.sub(r"[^a-z0-9]+", "_", sentence.author.casefold()).strip("_"),
+            "corpus_cloze::translation_" + (level or "missing"),
+        ],
+    }
+
+
+def archive_originals(path: Path, note_ids: list[int]) -> None:
+    archive = (
+        json.loads(path.read_text(encoding="utf-8"))
+        if path.exists() else {"schema_version": 1, "notes": [], "cards": []}
+    )
+    archived = {note["noteId"] for note in archive["notes"]}
+    new_ids = [note_id for note_id in note_ids if note_id not in archived]
+    archive["notes"].extend(batched_note_info(new_ids))
+    for batch in chunks(new_ids, 100):
+        archive["cards"].extend(anki("cardsInfo", cards=cards_for_notes(batch)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(archive, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    saved = {note["noteId"] for note in json.loads(path.read_text(encoding="utf-8"))["notes"]}
+    if not set(note_ids) <= saved:
+        raise RuntimeError("refusing to delete originals: archive verification failed")
+
+
+def migrate(
+    corpus_root: Path = CORPUS_ROOT,
+    archive_path: Path = ARCHIVE_PATH,
+    *,
+    tempo: float = 0.8,
+) -> dict[str, int]:
+    """Bring the collection to its migrated state. Safe to run any number of times.
+
+    Anki is the only state. An original `Basic` note under `Greek and Latin` is
+    in one of three states, and each run advances it as far as it can:
+    no replacement yet -> match it (create a suspended replacement, or move it to
+    the unmatched deck); replacement without audio -> add audio; replacement with
+    audio -> activate it if the original was active, archive the original, delete it.
+    Existing replacements are never rewritten, so manual edits survive.
+    """
+    from scripts.classical_cloze.mms_audio import SOUND_RE, sync_audio
+
+    ensure_model()
+    sources = export_source_notes()
+    replacements: dict[int, int] = {}
+    for note in batched_note_info(anki("findNotes", query=f'deck:"{DESTINATION_DECK}"')):
+        original = note["fields"].get("OriginalNoteID", {}).get("value", "")
+        if original.isdigit():
+            replacements[int(original)] = note["noteId"]
+
+    pending = [source for source in sources if source["note_id"] not in replacements]
+    create: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    unmatched: dict[str, list[int]] = defaultdict(list)
+    if pending:
+        lemma_index, form_index = build_indexes(load_corpus(corpus_root))
+        already_unmatched = set(anki("findNotes", query=f'deck:"{UNMATCHED_DECK}" note:Basic'))
+        for source in pending:
+            candidates, reason = find_candidates(source["front"], source["language"], lemma_index, form_index)
+            if candidates:
+                create.append((source, replacement_note(source, candidates)))
+            elif source["note_id"] not in already_unmatched:
+                status = unmatched_status(source["front"], source["language"]) if reason == "unmatched" else reason
+                unmatched[status].append(source["note_id"])
+
+    for batch in chunks(create, 100):
+        note_ids = anki("addNotes", notes=[payload for _, payload in batch])
+        if any(note_id is None for note_id in note_ids):
+            raise RuntimeError("Anki rejected one or more replacement notes")
+        anki("suspend", cards=cards_for_notes(note_ids))
+        for (source, _), note_id in zip(batch, note_ids, strict=True):
+            replacements[source["note_id"]] = note_id
+
+    if unmatched:
+        anki("createDeck", deck=UNMATCHED_DECK)
+    for status, ids in unmatched.items():
+        anki("addTags", notes=ids, tags=f"corpus_cloze::unmatched corpus_cloze::{status}")
+        for batch in chunks(ids, 100):
+            anki("changeDeck", cards=cards_for_notes(batch), deck=UNMATCHED_DECK)
+
+    audio = sync_audio(tempo=tempo)
+
+    linked = [source for source in sources if source["note_id"] in replacements]
+    texts = {
+        note["noteId"]: note["fields"]["Text"]["value"]
+        for note in batched_note_info([replacements[source["note_id"]] for source in linked])
+    }
+    ready = [source for source in linked if SOUND_RE.search(texts[replacements[source["note_id"]]])]
+    activate = [replacements[s["note_id"]] for s in ready if s["original_state"] == "active"]
+    for batch in chunks(activate, 100):
+        anki("unsuspend", cards=cards_for_notes(batch))
+    retired = [source["note_id"] for source in ready]
+    if retired:
+        archive_originals(archive_path, retired)
+        anki("deleteNotes", notes=retired)
+    return {
+        "originals": len(sources), "created": len(create),
+        "moved_to_unmatched": sum(map(len, unmatched.values())),
+        "audio_updated": audio["updated"], "originals_retired": len(retired),
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    build = subparsers.add_parser("build-manifest", help="read Anki and create a read-only pilot manifest")
-    build.add_argument("--corpora", type=Path, default=Path("data/classical_cloze/corpora"))
-    build.add_argument("--output", type=Path, default=Path("data/classical_cloze/pilot.json"))
-    build.add_argument("--pilot-per-language", type=int, default=50)
-    build.add_argument(
-        "--source-manifest", type=Path,
-        help="reuse source-note metadata from an existing manifest instead of Anki",
-    )
-    write = subparsers.add_parser("write-pilot", help="create suspended notes and audio from a manifest")
-    write.add_argument("manifest", type=Path)
-    tags = subparsers.add_parser("tag-unmatched", help="tag source notes that the manifest could not match")
-    tags.add_argument("manifest", type=Path)
-    migration = subparsers.add_parser("write-migration", help="idempotently create all matched notes suspended")
-    migration.add_argument("manifest", type=Path)
-    commit = subparsers.add_parser("commit-migration", help="activate replacements and suspend completed originals")
+    run = subparsers.add_parser("migrate", help="match, create, add audio and retire originals; safe to re-run")
+    run.add_argument("--corpora", type=Path, default=CORPUS_ROOT)
+    run.add_argument("--archive", type=Path, default=ARCHIVE_PATH)
     subparsers.add_parser("fetch-translations", help="download canonical Perseus English editions")
-    commit.add_argument("manifest", type=Path)
-    finalize = subparsers.add_parser("finalize-migration", help="archive/delete matched originals and move residuals")
-    finalize.add_argument("manifest", type=Path)
-    finalize.add_argument("--archive", type=Path, required=True)
-    glosses = subparsers.add_parser("backfill-glosses", help="restore glosses from archived originals")
-    glosses.add_argument("--archives", type=Path, default=Path("data/classical_cloze/archive"))
-    reconcile = subparsers.add_parser("reconcile-after-sync", help="remove originals restored by a remote download")
-    reconcile.add_argument("--archive", type=Path, required=True)
     args = parser.parse_args()
-    if args.command == "build-manifest":
-        source_notes = None
-        if args.source_manifest:
-            previous = json.loads(args.source_manifest.read_text(encoding="utf-8"))
-            source_notes = [{
-                **{
-                    key: entry[key]
-                    for key in ("note_id", "front", "language", "original_tags", "original_state")
-                },
-                "gloss_html": entry.get("gloss_html", ""),
-            } for entry in previous["entries"]]
-        manifest = build_manifest(args.corpora, args.pilot_per_language, source_notes)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        print(json.dumps({"output": str(args.output), "matched_counts": manifest["matched_counts"]}))
-    elif args.command == "write-pilot":
-        write_pilot(args.manifest)
-    elif args.command == "write-migration":
-        write_migration(args.manifest)
-    elif args.command == "commit-migration":
-        commit_migration(args.manifest)
-    elif args.command == "fetch-translations":
-        print(json.dumps({"downloaded": fetch_translations(TRANSLATION_ROOT), "directory": str(TRANSLATION_ROOT)}))
-    elif args.command == "finalize-migration":
-        finalize_migration(args.manifest, args.archive)
-    elif args.command == "backfill-glosses":
-        print(json.dumps(backfill_glosses(args.archives)))
-    elif args.command == "reconcile-after-sync":
-        print(json.dumps(reconcile_after_sync(args.archive)))
+    if args.command == "migrate":
+        from flashcards.recipes import ClassicalMigration
+
+        print(json.dumps(ClassicalMigration(args.corpora, args.archive).apply()))
     else:
-        tag_unmatched(args.manifest)
+        print(json.dumps({"downloaded": fetch_translations(TRANSLATION_ROOT), "directory": str(TRANSLATION_ROOT)}))
 
 
 if __name__ == "__main__":

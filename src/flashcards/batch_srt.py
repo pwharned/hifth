@@ -10,15 +10,19 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .adapters import AnkiConnect
 from .subtitles import SubtitleCue, parse_subtitles
 
 
 ANKI_URL = "http://127.0.0.1:8765"
+_ANKI = AnkiConnect(ANKI_URL)
 MODEL_NAME = "SRT Sentence Audio"
+LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 SPEAKER_RE = re.compile(r"^(?:\[ﾏｲｸ\])?\s*[（(][^）)]{1,30}[）)]\s*")
 ONLY_DIRECTION_RE = re.compile(r"^[（(][^）)]+[）)]$")
 MUSIC_RE = re.compile(r"^[♪♫♬～〜\s]+$")
@@ -34,16 +38,7 @@ class BatchCue:
 
 
 def anki(action: str, **params: Any) -> Any:
-    request = urllib.request.Request(
-        ANKI_URL,
-        data=json.dumps({"action": action, "version": 6, "params": params}).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        payload = json.load(response)
-    if payload.get("error"):
-        raise RuntimeError(f"AnkiConnect {action}: {payload['error']}")
-    return payload["result"]
+    return _ANKI.invoke(action, **params)
 
 
 def clean_text(value: str) -> str:
@@ -108,38 +103,58 @@ def fetch(url: str) -> bytes:
     raise RuntimeError("unreachable")
 
 
-def translate(text: str) -> str:
+def language_code(value: str) -> str:
+    if not LANGUAGE_RE.fullmatch(value):
+        raise ValueError(f"invalid language code {value!r}; expected e.g. 'ja', 'vi', 'ar', 'zh-CN'")
+    return value
+
+
+def add_language_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--lang", type=language_code, default="ja",
+                        help="language of the subtitles, used for translation and audio (default: ja)")
+    parser.add_argument("--translate-to", type=language_code, default="en",
+                        help="language of the translation on the back of the card (default: en)")
+
+
+def translate(text: str, source: str = "ja", target: str = "en") -> str:
     query = urllib.parse.urlencode({
-        "client": "gtx", "sl": "ja", "tl": "en", "dt": "t", "q": text,
+        "client": "gtx", "sl": source, "tl": target, "dt": "t", "q": text,
     })
     payload = json.loads(fetch(f"https://translate.googleapis.com/translate_a/single?{query}"))
     return "".join(part[0] for part in payload[0] if part and part[0]).strip()
 
 
-def synthesize(text: str) -> bytes:
+def synthesize(text: str, lang: str = "ja") -> bytes:
     query = urllib.parse.urlencode({
-        "ie": "UTF-8", "client": "tw-ob", "tl": "ja", "q": text,
+        "ie": "UTF-8", "client": "tw-ob", "tl": lang, "q": text,
     })
     return fetch(f"https://translate.googleapis.com/translate_tts?{query}")
 
 
-def ensure_model() -> None:
-    front = """<div class="source" lang="ja">{{Source}}</div>
-<div class="audio">{{Audio}}</div>"""
+def model_name(lang: str) -> str:
+    return MODEL_NAME if lang == "ja" else f"{MODEL_NAME} ({lang})"
+
+
+def ensure_model(lang: str = "ja") -> None:
+    front = f"""<div class="source" lang="{lang}">{{{{Source}}}}</div>
+<div class="audio">{{{{Audio}}}}</div>"""
     back = """{{FrontSide}}
 <hr id="answer">
 <div class="translation">{{Translation}}</div>
 <div class="metadata">Cue {{CueID}} · {{Timestamp}}</div>"""
     css = """.card { font-family: sans-serif; font-size: 22px; text-align: center; line-height: 1.55; }
-.source { font-family: 'Noto Sans JP', sans-serif; font-size: 28px; }
+.source { font-size: 28px; }
 .audio { margin: 1rem 0; }
 .translation { margin-top: 1rem; }
 .metadata { margin-top: 1rem; color: #888; font-size: 12px; }
 hr { border: 0; border-top: 1px solid #bbb; }"""
-    if MODEL_NAME in anki("modelNames"):
+    if lang == "ja":
+        css += "\n.source { font-family: 'Noto Sans JP', sans-serif; }"
+    name = model_name(lang)
+    if name in anki("modelNames"):
         return
     anki(
-        "createModel", modelName=MODEL_NAME,
+        "createModel", modelName=name,
         inOrderFields=["Source", "Translation", "Audio", "CueID", "Timestamp", "SourceFile"],
         css=css,
         isCloze=False,
@@ -152,19 +167,38 @@ def timestamp(milliseconds: float) -> str:
     return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
 
 
-def generate(subtitle_path: Path, deck: str, cache_path: Path, delay: float) -> dict[str, int]:
+def generate(
+    subtitle_path: Path,
+    deck: str,
+    cache_path: Path,
+    delay: float,
+    parse: Callable[[str], tuple[SubtitleCue, ...]] = parse_subtitles,
+    lang: str = "ja",
+    translate_to: str = "en",
+) -> dict[str, int]:
+    language_code(lang)
+    language_code(translate_to)
     subtitle_bytes = subtitle_path.read_bytes()
     source_hash = hashlib.sha256(subtitle_bytes).hexdigest()
-    cues = prepare_cues(parse_subtitles(subtitle_bytes.decode("utf-8-sig")))
+    parsed = parse(subtitle_bytes.decode("utf-8-sig"))
+    cues = prepare_cues(parsed)
     cache = (
         json.loads(cache_path.read_text(encoding="utf-8"))
-        if cache_path.exists() else {"schema_version": 1, "source_sha256": source_hash, "cues": {}}
+        if cache_path.exists() else {
+            "schema_version": 1, "source_sha256": source_hash,
+            "lang": lang, "translate_to": translate_to, "cues": {},
+        }
     )
     if cache["source_sha256"] != source_hash:
         raise RuntimeError("SRT changed; use a new cache or remove the old one")
+    if (cache.get("lang", "ja"), cache.get("translate_to", "en")) != (lang, translate_to):
+        raise RuntimeError(
+            f"cache was built for {cache.get('lang', 'ja')} -> {cache.get('translate_to', 'en')}; "
+            "use a new cache for a different language"
+        )
     media_dir = cache_path.parent / "srt-tts-media"
     media_dir.mkdir(parents=True, exist_ok=True)
-    ensure_model()
+    ensure_model(lang)
     anki("createDeck", deck=deck)
     created = 0
     existing = 0
@@ -173,7 +207,7 @@ def generate(subtitle_path: Path, deck: str, cache_path: Path, delay: float) -> 
         stored = cache["cues"].setdefault(stable_id, {})
         translation = stored.get("translation")
         if not translation:
-            translation = translate(cue.text)
+            translation = translate(cue.text, lang, translate_to)
             stored["translation"] = translation
             cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             time.sleep(delay)
@@ -190,11 +224,11 @@ def generate(subtitle_path: Path, deck: str, cache_path: Path, delay: float) -> 
             })
             existing += 1
             continue
-        digest = hashlib.sha256(f"ja\0{cue.text}".encode()).hexdigest()[:24]
-        filename = f"srt_ja_{digest}.mp3"
+        digest = hashlib.sha256(f"{lang}\0{cue.text}".encode()).hexdigest()[:24]
+        filename = f"srt_{lang}_{digest}.mp3"
         audio_path = media_dir / filename
         if not audio_path.exists():
-            audio_path.write_bytes(synthesize(cue.text))
+            audio_path.write_bytes(synthesize(cue.text, lang))
             time.sleep(delay)
         media = anki(
             "storeMediaFile", filename=filename,
@@ -202,7 +236,7 @@ def generate(subtitle_path: Path, deck: str, cache_path: Path, delay: float) -> 
         )
         note_id = anki("addNote", note={
             "deckName": deck,
-            "modelName": MODEL_NAME,
+            "modelName": model_name(lang),
             "fields": {
                 "Source": html.escape(cue.text),
                 "Translation": html.escape(translation),
@@ -212,7 +246,7 @@ def generate(subtitle_path: Path, deck: str, cache_path: Path, delay: float) -> 
                 "SourceFile": subtitle_path.name,
             },
             "options": {"allowDuplicate": True},
-            "tags": ["generated::srt_batch", f"source::{subtitle_path.stem}"],
+            "tags": ["generated::srt_batch", "source::" + re.sub(r"\s+", "_", subtitle_path.stem)],
         })
         card = anki("findCards", query=f"nid:{note_id}")[0]
         stored["note_id"] = note_id
@@ -220,18 +254,22 @@ def generate(subtitle_path: Path, deck: str, cache_path: Path, delay: float) -> 
         stored["order"] = cue.index
         cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         created += 1
-    return {"input_cues": len(parse_subtitles(subtitle_bytes.decode("utf-8-sig"))), "cards": len(cues), "created": created, "existing": existing}
+    return {"input_cues": len(parsed), "cards": len(cues), "created": created, "existing": existing}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("subtitles", type=Path)
     parser.add_argument("--deck", required=True)
+    add_language_arguments(parser)
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--delay", type=float, default=0.25)
     args = parser.parse_args()
     cache = args.cache or Path("data/srt-batch") / f"{args.subtitles.stem}.json"
-    result = generate(args.subtitles, args.deck, cache, args.delay)
+    result = generate(
+        args.subtitles, args.deck, cache, args.delay,
+        lang=args.lang, translate_to=args.translate_to,
+    )
     print(json.dumps(result))
 
 

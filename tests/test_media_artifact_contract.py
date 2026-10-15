@@ -16,11 +16,8 @@ class MediaArtifactContractTests(unittest.TestCase):
     def test_shared_golden_fixture_decodes_and_is_stateless(self) -> None:
         fixture = (
             ROOT
-            / "media-reviewer"
-            / "shared"
-            / "src"
-            / "test"
-            / "resources"
+            / "tests"
+            / "fixtures"
             / "media-artifact-v1.json"
         )
         payload = fixture.read_text(encoding="utf-8")
@@ -47,11 +44,8 @@ class MediaArtifactContractTests(unittest.TestCase):
     def test_nullable_fields_may_be_omitted(self) -> None:
         fixture = (
             ROOT
-            / "media-reviewer"
-            / "shared"
-            / "src"
-            / "test"
-            / "resources"
+            / "tests"
+            / "fixtures"
             / "media-artifact-v1.json"
         )
         payload = json.loads(fixture.read_text(encoding="utf-8"))

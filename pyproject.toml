@@ -15,11 +15,16 @@ anki = ["genanki>=0.13,<0.14"] # Quran APKG generator only
 asr = ["faster-whisper>=1.2,<2"]
 
 [project.scripts]
+flashcards = "flashcards.cli:main"
 flashcards-import-subtitles = "flashcards.subtitles:main"
 flashcards-import-media = "flashcards.import_media:main"
 flashcards-prepare-asr = "flashcards.faster_whisper_backend:main_prepare"
 flashcards-batch-srt = "flashcards.batch_srt:main"
+flashcards-batch-ass = "flashcards.batch_ass:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["flashcards*", "quran_alignment*"]
+
+[tool.setuptools.package-data]
+flashcards = ["schema/*.json"]

@@ -1,4 +1,4 @@
-# Classical corpus cloze pilot
+# Classical corpus cloze
 
 This standalone tool converts `Basic` notes in the `Greek and Latin` Anki deck
 into suspended, sentence-level cloze notes. It uses only attested, annotated
@@ -16,44 +16,57 @@ git clone --depth 1 https://github.com/UniversalDependencies/UD_Latin-Perseus.gi
 git clone --depth 1 https://github.com/UniversalDependencies/UD_Latin-PROIEL.git data/classical_cloze/corpora/UD_Latin-PROIEL
 ```
 
-Anki Desktop and AnkiConnect must be running. Building a manifest is read-only.
+Anki Desktop and AnkiConnect must be running.
 
-## Pilot
+## Model
 
-```bash
-python -m scripts.classical_cloze.pipeline build-manifest
-python -m scripts.classical_cloze.pipeline write-pilot data/classical_cloze/pilot.json
-.venv/bin/python -m scripts.classical_cloze.mms_audio data/classical_cloze/pilot.json
-```
+Anki is the only source of truth. There are two groups of cards:
 
-`build-manifest` reads all source notes but retains only the first 50 ranked
-matches per language plus the complete unmatched/ambiguous inventory.
-Inspect `pilot.json` before running `write-pilot`. The writer is resumable and
-records each generated note ID immediately. Every generated card is suspended.
-The second command replaces temporary pilot audio with deterministic MMS
-Ancient Greek/Latin audio slowed to 80% tempo without changing pitch. Pass a
-different target with `--tempo`; existing MMS clips are retimed directly, so
-changing speed does not require regenerating speech:
+- **Matched:** `Classical Corpus Cloze` notes in `Greek and Latin::Corpus Cloze`.
+- **Unmatched:** the original `Basic` notes in `Greek and Latin::Unmatched Originals`,
+  waiting for the manual reviewer (below).
+
+No manifest or cache file exists. A card's audio is derived only from the text
+displayed on the card.
+
+## Migration
 
 ```bash
-.venv/bin/python -m scripts.classical_cloze.mms_audio MANIFEST --tempo 0.8
+python -m scripts.classical_cloze.pipeline fetch-translations   # once
+.venv/bin/python -m scripts.classical_cloze.pipeline migrate
 ```
 
-Source-note tagging is a separate, explicit mutation:
+`migrate` is safe to run at any time and any number of times; a second run
+changes nothing. Each original `Basic` note under `Greek and Latin` moves as far
+as it can:
+
+1. No replacement yet: it is matched against the corpora. A match creates a
+   suspended cloze note; no match moves the original to the unmatched deck.
+2. Replacement without audio: audio is generated.
+3. Replacement with audio: it is activated (if the original was active), the
+   original is archived to `data/classical_cloze/archive/migrated-originals.json`
+   and then deleted.
+
+Existing replacements are never rewritten, so manual edits survive. Pass
+`--corpora` or `--archive` to change the default locations.
+
+## Audio
+
+Audio is MMS Ancient Greek/Latin speech at 80% tempo. Each note's clip filename
+embeds a hash of the model, tempo and the card text, so a clip is current exactly
+when it matches the text on the card. Run it on its own with:
 
 ```bash
-python -m scripts.classical_cloze.pipeline tag-unmatched data/classical_cloze/pilot.json
+.venv/bin/python -m scripts.classical_cloze.mms_audio            # 80% tempo
+.venv/bin/python -m scripts.classical_cloze.mms_audio --tempo 0.9
 ```
 
-The base adapter covers eligible sentences in the downloaded UD treebanks.
-Download the configured public-domain English Perseus editions before building
-the manifest:
+Only notes whose clip is missing or no longer matches their text are regenerated.
+To fix a card by hand, edit its text in Anki and run the command again. To force
+every clip to regenerate, change `AUDIO_VERSION` in `mms_audio.py`. Superseded
+clips stay in Anki's media folder until you run **Tools > Check Media**.
 
-```bash
-python -m scripts.classical_cloze.pipeline fetch-translations
-```
-
-The pipeline aligns translations by canonical section or source-anchored verse
+The base adapter covers eligible sentences in the downloaded UD treebanks. `migrate` aligns translations by canonical section or source-anchored verse
 range. UD Iliad sentence IDs are resolved through the original AGDT treebank's
 canonical `subdoc` references. Cards without a defensible canonical match remain
 tagged `corpus_cloze::translation_missing`. Every supported citation includes

@@ -25,25 +25,21 @@ SHA256: 2fd84f93af82ae8dbc7f97fccf9fa74be7e05c94b13d2db9639fa3944b01f8cb
    **File > Import** command.
 4. Confirm that `Greek and Latin::Corpus Cloze` and
    `Greek and Latin::Unmatched Originals` are present.
-5. Run the reconciliation command with AnkiConnect active:
+5. Run the migration with AnkiConnect active:
 
 ```bash
-python -m scripts.classical_cloze.pipeline reconcile-after-sync \
-  --archive data/classical_cloze/archive/reappeared-originals-after-sync.json
+.venv/bin/python -m scripts.classical_cloze.pipeline migrate
 ```
 
 6. Verify the deck in Anki, then sync normally to upload the merged and
    reconciled collection.
 
-## Why reconciliation is required
+## Why re-running the migration repairs this
 
 An APKG contains notes, cards, scheduling, and media, but absence from a package
 does not delete a note already present in the collection. If AnkiWeb still has
-the pre-migration originals, those notes survive package import. The
-reconciliation command uses each replacement's `OriginalNoteID` to identify,
-archive, and delete only originals that already have corpus-cloze replacements.
-Originals without replacements remain tagged and are moved to the unmatched
-deck.
-
-The command refuses to run when it cannot find replacement `OriginalNoteID`
-values. It archives every reappeared original before deletion.
+the pre-migration originals, those notes survive package import. `migrate` is
+idempotent and reads only Anki: it uses each replacement's `OriginalNoteID` to
+find originals that already have corpus-cloze replacements, archives them to
+`data/classical_cloze/archive/migrated-originals.json`, and deletes only those.
+Originals without replacements are matched again or moved to the unmatched deck.

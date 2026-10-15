@@ -27,6 +27,8 @@ from .transcription import (
     TranscriptionValidationError,
     utterances_from_transcription,
 )
+from .app import FlashcardApp, PublishReport
+from .domain import AudioAsset, CardDraft, DraftBatch, Provenance
 
 __all__ = [
     "CURRENT_SCHEMA_VERSION",
@@ -45,6 +47,12 @@ __all__ = [
     "TranscriptionResult",
     "TranscriptionValidationError",
     "Utterance",
+    "AudioAsset",
+    "CardDraft",
+    "DraftBatch",
+    "FlashcardApp",
+    "Provenance",
+    "PublishReport",
     "concat_audio",
     "materialize_audio_span",
     "normalize_audio",

@@ -66,12 +66,10 @@ that automated tools cannot reliably detect.
 
 ## General-purpose media flashcards
 
-The repository also contains a stateless language-learning card bridge. Python
-extracts an immutable timed transcript artifact from downloaded audio or video;
-a Scala JVM/Scala.js reviewer consumes that artifact, translates exact text
-selections and sentences with Google, prepares whole-sentence Google TTS, and
-sends audio Cloze notes directly to AnkiConnect. Anki remains the only card
-and review store.
+The repository contains a batch-first language-learning card engine. It can
+parse subtitle files, extract embedded subtitles, use local speech recognition,
+translate complete cues, generate audio, and publish cards through AnkiConnect.
+Anki remains the card editor and review store.
 
 Media can use external subtitles, an embedded source-language text track, or
 local speech recognition when neither is available:
@@ -82,35 +80,23 @@ python -m pip install -e ".[asr]"
 # Explicit one-time ASR model download. Imports never download model weights.
 flashcards-prepare-asr --model medium
 
-# External subtitles
-flashcards-import-media movie.mp4 --subtitles movie.vi.srt \
-  --language vi --out projects/movie.json
+# Translate, synthesize and publish a complete subtitle batch
+flashcards subtitles movie.vi.srt --deck "Vietnamese::Movies" \
+  --language vi --translate-to en
 
-# Embedded Vietnamese subtitles when available, otherwise local ASR
-flashcards-import-media movie.mkv \
+# Extract embedded Vietnamese subtitles when available, otherwise local ASR
+flashcards media movie.mkv \
   --language vi --asr-model medium --out projects/movie.json
 
 # Audio-only input follows the same ASR fallback
-flashcards-import-media podcast.mp3 \
+flashcards media podcast.mp3 \
   --language vi --asr-model medium --out projects/podcast.json
-
-sbt "backend/run projects/movie.json"
 ```
 
-Selecting text in a cue immediately requests a contextual target gloss and a
-full-sentence English translation, then prepares whole-sentence source-language
-TTS. Both translations are editable and the generated audio is playable before
-**Create card** sends the exact previewed bytes to AnkiConnect. The reviewer does
-not save cards, progress, transcript edits, or duplicate state; Anki rejects
-duplicate notes naturally. Source text is sent to Google for translation and
-speech generation. The destination deck is selected from Anki's live deck list,
-and a persistent result reports the created note ID or the failure. See
-the [media flashcard guide](docs/MEDIA_FLASHCARDS.md) for setup, Japanese audio,
-batch imports, card creation, and troubleshooting. See
-`src/flashcards/README.md` for the artifact contract and implementation details.
-
-The reviewer intentionally mirrors Clausula's undocumented `MkEWBc` translation
-RPC and `translate_tts` request rather than using a supported Google API.
+Batch generation is deterministic and cache-backed, so interrupted runs can be
+resumed and existing cards updated. Generate broadly, then delete or edit cards
+in Anki. See the [media flashcard guide](docs/MEDIA_FLASHCARDS.md) and
+[`src/flashcards/README.md`](src/flashcards/README.md).
 
 ## Project structure
 
@@ -135,11 +121,6 @@ hifth/                    - legacy Quran memorization app with its own SBT build
   backend/                - legacy SRS backend and static asset server
   frontend/               - legacy Laminar memorization player
   static/                 - generated legacy Scala.js output
-media-reviewer/           - root SBT application's Archipelago-style modules
-  shared/                 - card/artifact domain and typed WebSocket messages
-  backend/                - stateless Google TTS/translation and AnkiConnect bridge
-  frontend/               - standalone Laminar media reviewer and shared UI
-  schema/                 - Python/Scala media artifact contract
 ```
 
 ## Generating alignment data for the entire Quran
@@ -264,6 +245,5 @@ Anki's **Tools > Check Media** can remove them after import.
 ## Legacy Hifth application
 
 The original Quran memorization web application remains available as an
-independent SBT build. See [`hifth/README.md`](hifth/README.md) for its commands
-and architecture. It is not required for the Quran Anki export or the general
-media flashcard reviewer.
+independent SBT build. See [`hifth/README.md`](hifth/README.md). It is not
+required for Quran or general flashcard generation.

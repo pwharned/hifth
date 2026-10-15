@@ -3,7 +3,6 @@ from __future__ import annotations
 import html
 import json
 import re
-import tempfile
 import unicodedata
 import urllib.parse
 import uuid
@@ -14,7 +13,7 @@ from typing import Any
 from scripts.classical_cloze.glaux_discovery import search as glaux_search
 from scripts.classical_cloze.glaux_discovery import sentence_details
 from scripts.classical_cloze.glaux_discovery import request_json as glaux_request_json
-from scripts.classical_cloze.mms_audio import generate as generate_audio
+from scripts.classical_cloze.mms_audio import sync_audio
 from scripts.classical_cloze.pipeline import (
     DESTINATION_DECK,
     MODEL_NAME,
@@ -455,18 +454,7 @@ class Campaign:
         })
         cards = anki("findCards", query=f"nid:{replacement}")
         anki("suspend", cards=cards)
-        audio_manifest = {
-            "entries": [{
-                "generated_note_id": replacement,
-                "language": candidate.language,
-                "primary": {"text": candidate.text},
-                "text": candidate.cloze,
-            }]
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            manifest_path = Path(directory) / "manual-audio.json"
-            manifest_path.write_text(json.dumps(audio_manifest), encoding="utf-8")
-            generate_audio(manifest_path, 0.8)
+        sync_audio(note_ids=[replacement])
         replacement_note = anki("notesInfo", notes=[replacement])[0]
         if "[sound:" not in replacement_note["fields"]["Text"]["value"]:
             raise RuntimeError("replacement audio was not attached")

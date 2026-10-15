@@ -1,4 +1,11 @@
-"""Generate or retime MMS audio and attach it to manifest-backed Anki notes."""
+"""Make every Corpus Cloze note's audio match its displayed text.
+
+Anki is the only source of truth. A note's clip is a pure function of its own
+`Text` field: the filename embeds a hash of (model, tempo, text), so a note is
+current exactly when its `[sound:]` tag names the file for its present text.
+Re-running changes nothing; editing a note's text and re-running regenerates
+only that note's clip.
+"""
 
 from __future__ import annotations
 
@@ -6,145 +13,132 @@ import argparse
 import base64
 import hashlib
 import importlib
-import json
 import re
 import subprocess
 import tempfile
 import unicodedata
-import urllib.request
 from pathlib import Path
 from typing import Any
 
+from scripts.classical_cloze.pipeline import DESTINATION_DECK, MODEL_NAME, anki, batched_note_info
 
-ANKI_URL = "http://127.0.0.1:8765"
 MODEL_IDS = {
     "greek": "facebook/mms-tts-grc",
     "latin": "facebook/mms-tts-lat",
 }
+DEFAULT_TEMPO = 0.8
+# Bump to invalidate every existing clip (for example after a synthesis change).
+AUDIO_VERSION = "v2"
+BATCH_SIZE = 10
+SOUND_RE = re.compile(r"\[sound:([^]]+)\]")
+CLOZE_RE = re.compile(r"\{\{c\d+::(.*?)(?:::[^}]*)?\}\}")
 
 
-def anki(action: str, **params: Any) -> Any:
-    payload = json.dumps({"action": action, "version": 6, "params": params}).encode()
-    request = urllib.request.Request(
-        ANKI_URL, data=payload, headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(request, timeout=300) as response:
-        result = json.load(response)
-    if result.get("error"):
-        raise RuntimeError(f"AnkiConnect {action}: {result['error']}")
-    return result["result"]
+def spoken_text(field: str) -> str:
+    return unicodedata.normalize("NFKC", CLOZE_RE.sub(r"\1", SOUND_RE.sub("", field)))
 
 
-def chunks(items: list[dict[str, Any]], size: int):
-    for start in range(0, len(items), size):
-        yield items[start:start + size]
+def audio_filename(language: str, tempo: float, text: str) -> str:
+    key = f"{AUDIO_VERSION}\0{MODEL_IDS[language]}\0{tempo}\0{text}"
+    digest = hashlib.sha256(key.encode()).hexdigest()[:20]
+    return f"classical_cloze_mms_{language}_t{round(tempo * 100)}_{digest}.wav"
 
 
-def generate(manifest_path: Path, tempo: float) -> None:
-    torch = importlib.import_module("torch")
-    transformers = importlib.import_module("transformers")
-    wavfile = importlib.import_module("scipy.io.wavfile")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    entries = [entry for entry in manifest["entries"] if entry.get("generated_note_id")]
-
-    cache = manifest_path.parent / "mms-cache"
-    cache.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as temporary:
-        temporary_directory = Path(temporary)
-        for language, model_id in MODEL_IDS.items():
-            language_entries = [entry for entry in entries if entry["language"] == language]
-            if not language_entries:
-                continue
-            tokenizer = None
-            model = None
-            generated = []
-            for entry in language_entries:
-                if entry.get("audio_provider") == model_id and entry.get("audio_tempo") == tempo:
-                    continue
-                text = unicodedata.normalize("NFKC", entry["primary"]["text"])
-                digest = hashlib.sha256(f"{model_id}\0{tempo}\0{text}".encode()).hexdigest()[:20]
-                filename = f"classical_cloze_mms_{language}_t{round(tempo * 100)}_{digest}.wav"
-                raw_path = temporary_directory / "raw.wav"
-                output_path = cache / filename
-                if not output_path.exists():
-                    current_tempo = entry.get("audio_tempo")
-                    current_filename = entry.get("audio_filename")
-                    if (
-                        entry.get("audio_provider") == model_id
-                        and isinstance(current_tempo, (int, float))
-                        and current_filename
-                    ):
-                        encoded = anki("retrieveMediaFile", filename=current_filename)
-                        if not encoded:
-                            raise RuntimeError(f"Anki media is missing: {current_filename}")
-                        raw_path.write_bytes(base64.b64decode(encoded))
-                        filter_tempo = tempo / current_tempo
-                    else:
-                        if model is None:
-                            tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
-                            model = transformers.VitsModel.from_pretrained(model_id).eval()
-                            if torch.cuda.is_available():
-                                model = model.to("cuda")
-                        assert tokenizer is not None and model is not None
-                        inputs = tokenizer(text, return_tensors="pt")
-                        if torch.cuda.is_available():
-                            inputs = {key: value.to("cuda") for key, value in inputs.items()}
-                        transformers.set_seed(555)
-                        with torch.inference_mode():
-                            waveform = model(**inputs).waveform[0].cpu().numpy()
-                        wavfile.write(raw_path, model.config.sampling_rate, waveform)
-                        filter_tempo = tempo
-                    subprocess.run([
-                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                        "-i", str(raw_path), "-filter:a", f"atempo={filter_tempo}", str(output_path),
-                    ], check=True)
-                generated.append((entry, filename, output_path))
-                if len(generated) >= 10:
-                    attach_batch(generated, model_id, tempo, manifest, manifest_path)
-                    generated = []
-            if generated:
-                attach_batch(generated, model_id, tempo, manifest, manifest_path)
-            used_model = model is not None
-            if used_model:
-                del model
-            if used_model and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+def language_of(note: dict[str, Any]) -> str:
+    languages = [tag.split("::", 1)[1] for tag in note["tags"] if tag.startswith("language::")]
+    if len(languages) != 1 or languages[0] not in MODEL_IDS:
+        raise RuntimeError(f"note {note['noteId']} needs exactly one language::greek|latin tag")
+    return languages[0]
 
 
-def attach_batch(generated, model_id, tempo, manifest, manifest_path):
-    store_actions = [{
-        "action": "storeMediaFile", "version": 6,
-        "params": {"filename": filename, "data": base64.b64encode(path.read_bytes()).decode()},
-    } for _, filename, path in generated]
-    stored_results = anki("multi", actions=store_actions)
-    filenames = [result["result"] for result in stored_results]
-    update_actions = []
-    for (entry, _, _), filename in zip(generated, filenames, strict=True):
-        text_field = re.sub(r"\[sound:[^]]+\]", "", entry["text"])
-        update_actions.append({
-            "action": "updateNoteFields", "version": 6,
-            "params": {"note": {
-                "id": entry["generated_note_id"],
-                "fields": {"Text": f"{text_field}[sound:{filename}]"},
-            }},
-        })
-        entry["audio_filename"] = filename
-        entry["audio_provider"] = model_id
-        entry["audio_tempo"] = tempo
-    anki("multi", actions=update_actions)
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+class Synthesizer:
+    """Loads each MMS model on first use and renders text to a tempo-adjusted WAV."""
+
+    def __init__(self) -> None:
+        self.torch = importlib.import_module("torch")
+        self.transformers = importlib.import_module("transformers")
+        self.wavfile = importlib.import_module("scipy.io.wavfile")
+        self.models: dict[str, tuple[Any, Any]] = {}
+
+    def render(self, language: str, text: str, tempo: float, output: Path) -> None:
+        if language not in self.models:
+            model_id = MODEL_IDS[language]
+            tokenizer = self.transformers.AutoTokenizer.from_pretrained(model_id)
+            model = self.transformers.VitsModel.from_pretrained(model_id).eval()
+            if self.torch.cuda.is_available():
+                model = model.to("cuda")
+            self.models[language] = (tokenizer, model)
+        tokenizer, model = self.models[language]
+        inputs = tokenizer(text, return_tensors="pt")
+        if self.torch.cuda.is_available():
+            inputs = {key: value.to("cuda") for key, value in inputs.items()}
+        self.transformers.set_seed(555)
+        with self.torch.inference_mode():
+            waveform = model(**inputs).waveform[0].cpu().numpy()
+        raw = output.with_suffix(".raw.wav")
+        self.wavfile.write(raw, model.config.sampling_rate, waveform)
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(raw), "-filter:a", f"atempo={tempo}", str(output),
+        ], check=True)
+
+    def close(self) -> None:
+        self.models.clear()
+        if self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
+
+
+def sync_audio(tempo: float = DEFAULT_TEMPO, note_ids: list[int] | None = None) -> dict[str, int]:
+    """Attach the correct clip to each stale note; return counts of what was done."""
+    if note_ids is None:
+        note_ids = anki("findNotes", query=f'deck:"{DESTINATION_DECK}" note:"{MODEL_NAME}"')
+    in_media = set(anki("getMediaFilesNames", pattern="classical_cloze_mms_*"))
+    stale = []
+    for note in batched_note_info(note_ids):
+        field = note["fields"]["Text"]["value"]
+        text = spoken_text(field)
+        language = language_of(note)
+        filename = audio_filename(language, tempo, text)
+        if SOUND_RE.findall(field) != [filename]:
+            stale.append((note["noteId"], SOUND_RE.sub("", field), language, text, filename))
+    synthesized = 0
+    if stale:
+        synthesizer = None
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                for start in range(0, len(stale), BATCH_SIZE):
+                    updates = []
+                    for note_id, field, language, text, filename in stale[start:start + BATCH_SIZE]:
+                        if filename not in in_media:
+                            synthesizer = synthesizer or Synthesizer()
+                            path = Path(temporary) / filename
+                            synthesizer.render(language, text, tempo, path)
+                            stored = anki(
+                                "storeMediaFile", filename=filename,
+                                data=base64.b64encode(path.read_bytes()).decode(),
+                            )
+                            if stored != filename:
+                                raise RuntimeError(f"Anki stored {filename} as {stored}")
+                            in_media.add(filename)
+                            synthesized += 1
+                        updates.append({
+                            "action": "updateNoteFields", "version": 6,
+                            "params": {"note": {"id": note_id, "fields": {"Text": f"{field}[sound:{filename}]"}}},
+                        })
+                    anki("multi", actions=updates)
+        finally:
+            if synthesizer is not None:
+                synthesizer.close()
+    return {"notes": len(note_ids), "updated": len(stale), "synthesized": synthesized}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("--tempo", type=float, default=0.8)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tempo", type=float, default=DEFAULT_TEMPO)
     args = parser.parse_args()
     if not 0.5 <= args.tempo <= 1.5:
         parser.error("--tempo must be between 0.5 and 1.5")
-    generate(args.manifest, args.tempo)
+    print(sync_audio(args.tempo))
 
 
 if __name__ == "__main__":

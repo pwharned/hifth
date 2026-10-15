@@ -228,7 +228,6 @@ class FlashcardModelTests(unittest.TestCase):
     def test_obsolete_python_symbols_are_not_exported(self) -> None:
         for name in (
             "ProjectManifest",
-            "CardDraft",
             "ClozePolicy",
             "LearningComponent",
             "LearningUnit",

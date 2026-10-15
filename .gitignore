@@ -1,4 +1,3 @@
-gitignore
 # Conda
 *.egg-info/
 build/
