@@ -57,9 +57,13 @@ embeds a hash of the model, tempo and the card text, so a clip is current exactl
 when it matches the text on the card. Run it on its own with:
 
 ```bash
-.venv/bin/python -m scripts.classical_cloze.mms_audio            # 80% tempo
-.venv/bin/python -m scripts.classical_cloze.mms_audio --tempo 0.9
+uv run --extra classical flashcards classical repair-audio       # 80% tempo
+uv run --extra classical flashcards classical repair-audio --tempo 0.9
 ```
+
+`uv` creates or repairs `.venv` and installs the declared dependencies. No
+manual activation or pip bootstrap is required. Anki with AnkiConnect and
+`ffmpeg` must be available outside the Python environment.
 
 Only notes whose clip is missing or no longer matches their text are regenerated.
 To fix a card by hand, edit its text in Anki and run the command again. To force

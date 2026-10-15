@@ -43,9 +43,9 @@ is a reusable source boundary for batch recipes; no separate web app is needed.
 ## Specialist workflows
 
 ```bash
-flashcards classical migrate
-flashcards classical repair-audio
-flashcards classical repair-audio --tempo 0.9
+uv run --extra classical flashcards classical migrate
+uv run --extra classical flashcards classical repair-audio
+uv run --extra classical flashcards classical repair-audio --tempo 0.9
 
 flashcards quran align --surahs 1 2 3 --device cuda
 flashcards quran export --qh-start 1 --qh-end 20

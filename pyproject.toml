@@ -13,6 +13,7 @@ dependencies = []
 [project.optional-dependencies]
 anki = ["genanki>=0.13,<0.14"] # Quran APKG generator only
 asr = ["faster-whisper>=1.2,<2"]
+classical = ["scipy>=1.11,<2", "torch>=2.2", "transformers>=4.40,<6"]
 
 [project.scripts]
 flashcards = "flashcards.cli:main"
