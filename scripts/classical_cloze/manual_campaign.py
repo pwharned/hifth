@@ -14,6 +14,13 @@ from scripts.classical_cloze.glaux_discovery import search as glaux_search
 from scripts.classical_cloze.glaux_discovery import sentence_details
 from scripts.classical_cloze.glaux_discovery import request_json as glaux_request_json
 from scripts.classical_cloze.mms_audio import sync_audio
+from scripts.classical_cloze.matching import (
+    edit_distance,
+    normalize_greek,
+    normalize_latin,
+    safe_lemma_suggestions,
+    shared_prefix,
+)
 from scripts.classical_cloze.pipeline import (
     DESTINATION_DECK,
     MODEL_NAME,
@@ -62,47 +69,6 @@ def replace_word(text: str, index: int) -> tuple[str, str]:
         raise ValueError("matched word is outside the sentence")
     match = matches[index]
     return text[:match.start()] + "{{c1::" + match.group() + "}}" + text[match.end():], match.group()
-
-
-def normalize_greek(value: str) -> str:
-    decomposed = unicodedata.normalize("NFD", value).casefold()
-    return "".join(
-        character for character in decomposed
-        if unicodedata.category(character) != "Mn"
-    ).replace("ς", "σ")
-
-
-def edit_distance(left: str, right: str) -> int:
-    previous = list(range(len(right) + 1))
-    for left_index, left_character in enumerate(left, 1):
-        current = [left_index]
-        for right_index, right_character in enumerate(right, 1):
-            current.append(min(
-                current[-1] + 1,
-                previous[right_index] + 1,
-                previous[right_index - 1] + (left_character != right_character),
-            ))
-        previous = current
-    return previous[-1]
-
-
-def shared_prefix(left: str, right: str) -> int:
-    return next(
-        (index for index, pair in enumerate(zip(left, right)) if pair[0] != pair[1]),
-        min(len(left), len(right)),
-    )
-
-
-def safe_lemma_suggestions(target: str, suggestions: list[str]) -> list[str]:
-    wanted = normalize_greek(target)
-    ranked = []
-    for suggestion in suggestions:
-        normalized = normalize_greek(suggestion)
-        distance = edit_distance(wanted, normalized)
-        prefix = shared_prefix(wanted, normalized)
-        if distance <= 2 and prefix >= max(5, min(len(wanted), len(normalized)) - 3):
-            ranked.append((distance, -prefix, abs(len(wanted) - len(normalized)), suggestion))
-    return [item[-1] for item in sorted(set(ranked))[:5]]
 
 
 def rank_related_lemmas(target: str, suggestions: list[str]) -> list[str]:
@@ -267,10 +233,6 @@ def latin_candidates(target: str) -> list[Candidate]:
             search_note="",
         ))
     return rank_candidates(output)
-
-
-def normalize_latin(value: str) -> str:
-    return unicodedata.normalize("NFD", value).casefold().replace("v", "u").replace("j", "i")
 
 
 def rank_candidates(candidates: list[Candidate]) -> list[Candidate]:

@@ -65,6 +65,16 @@ uv run --extra classical flashcards classical repair-audio --tempo 0.9
 manual activation or pip bootstrap is required. Anki with AnkiConnect and
 `ffmpeg` must be available outside the Python environment.
 
+To retry unmatched single-word and recognized paradigm entries using the same
+GLAUx/Tesserae search strategies as the manual campaign, run:
+
+```bash
+uv run --extra classical flashcards classical migrate --online-single-words
+```
+
+This takes the first form of recognized paradigms. Phrases, correlatives,
+quotations, and grammar/reference notes remain unmatched for manual handling.
+
 Only notes whose clip is missing or no longer matches their text are regenerated.
 To fix a card by hand, edit its text in Anki and run the command again. To force
 every clip to regenerate, change `AUDIO_VERSION` in `mms_audio.py`. Superseded

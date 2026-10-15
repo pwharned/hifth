@@ -11,12 +11,18 @@ class ClassicalMigration:
     corpus_root: Path = Path("data/classical_cloze/corpora")
     archive: Path = Path("data/classical_cloze/archive/migrated-originals.json")
     tempo: float = 0.8
+    online_single_words: bool = False
 
     def apply(self) -> dict[str, int]:
         # Imported lazily so the core library does not require classical ML dependencies.
         from scripts.classical_cloze.pipeline import migrate
 
-        return migrate(self.corpus_root, self.archive, tempo=self.tempo)
+        return migrate(
+            self.corpus_root,
+            self.archive,
+            tempo=self.tempo,
+            online_single_words=self.online_single_words,
+        )
 
     def repair_audio(self) -> dict[str, int]:
         from scripts.classical_cloze.mms_audio import sync_audio

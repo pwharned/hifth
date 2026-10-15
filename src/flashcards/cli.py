@@ -34,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
         default=Path("data/classical_cloze/archive/migrated-originals.json"),
     )
     migrate.add_argument("--tempo", type=float, default=0.8)
+    migrate.add_argument("--online-single-words", action="store_true")
     audio = classical_commands.add_parser("repair-audio")
     audio.add_argument("--tempo", type=float, default=0.8)
 
@@ -70,6 +71,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 args, "archive", Path("data/classical_cloze/archive/migrated-originals.json")
             ),
             tempo=args.tempo,
+            online_single_words=getattr(args, "online_single_words", False),
         )
         result = recipe.apply() if args.classical_command == "migrate" else recipe.repair_audio()
         print(json.dumps(result))

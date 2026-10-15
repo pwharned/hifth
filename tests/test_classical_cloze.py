@@ -6,6 +6,7 @@ from scripts.classical_cloze.pipeline import (
     Token,
     cloze_text,
     find_candidates,
+    fuzzy_single_word_candidates,
     metadata_for,
     normalize,
     read_conllu,
@@ -37,6 +38,7 @@ def test_dictionary_front_extracts_explicit_headword():
     assert source_terms("impleo imples implet implemus impletis implent", "latin") == ["impleo"]
     assert source_terms("acer acris acre", "latin") == ["acer"]
     assert source_terms("comes comitis M", "latin") == ["comes"]
+    assert source_terms("crus cruris", "latin") == ["crus"]
     assert source_terms("cottidie/cotidie", "latin") == ["cottidie"]
     assert source_terms("--, suī (reflex. pron.)", "latin") == []
     assert source_terms("πολίχνιον, τό, Dim.", "greek") == ["πολίχνιον"]
@@ -54,6 +56,21 @@ def test_dictionary_front_extracts_explicit_headword():
 def test_unmatched_failure_classification():
     assert unmatched_status("tinguo tinguere tinxi tinctum", "latin") == "unmatched"
     assert unmatched_status("dēnique (unusual note)", "latin") == "annotation_unknown"
+
+
+def test_single_word_fallback_accepts_one_unambiguous_close_lemma():
+    item = Sentence(
+        "latin", "Livy", "History", "classical", "test", "doc", "1", "Providus erat.",
+        (Token("Providus", "prouidus", "ADJ", {}),),
+    )
+    candidates = fuzzy_single_word_candidates(
+        "prouiduz", "latin", {("latin", "prouidus"): [(item, 0)]}, {},
+    )
+    assert candidates[0].match_type == "fuzzy_lemma"
+
+
+def test_single_word_fallback_does_not_process_phrases():
+    assert fuzzy_single_word_candidates("ad dextram", "latin", {}, {}) == []
     assert unmatched_status("an English grammar explanation with many words that does not represent a concise Latin lexical target at all", "latin") == "nonlexical"
 
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from flashcards.adapters import AnkiConnect
+from scripts.classical_cloze.matching import edit_distance, safe_lemma_suggestions, shared_prefix
 
 from scripts.classical_cloze.translations import (
     canonical_citation, canonical_treebank_reference, edition_urn,
@@ -594,7 +595,12 @@ def source_terms(front: str, language: str) -> list[str]:
                 and latin_terms[1].endswith("is")
                 and latin_terms[2].endswith(("e", "a", "um"))
             )
-            if principal_parts or personal_paradigm or dictionary_gender or adjective_forms:
+            noun_pair = (
+                len(latin_terms) == 2
+                and shared_prefix(latin_terms[0], latin_terms[1]) >= 2
+                and latin_terms[1].endswith(("ae", "i", "is", "us", "ei"))
+            )
+            if principal_parts or personal_paradigm or dictionary_gender or adjective_forms or noun_pair:
                 cleaned = first
     # Imported dictionary records consistently put the headword before the
     # first comma. Taking that explicit field is safer than interpreting a
@@ -706,6 +712,46 @@ def find_candidates(
         candidate.score = rank(candidate)
     candidates.sort(key=lambda item: item.score)
     return candidates, None
+
+
+def fuzzy_single_word_candidates(
+    front: str, language: str, lemma_index: dict, form_index: dict,
+) -> list[Candidate]:
+    """Conservatively recover one close corpus spelling for a one-term entry."""
+    terms = source_terms(front, language)
+    if len(terms) != 1:
+        return []
+    target = normalize(terms[0], language, loose=True)
+    keys = {
+        key for index in (lemma_index, form_index)
+        for key_language, key in index
+        if key_language == language
+    }
+    suggestions = safe_lemma_suggestions(target, list(keys), language)
+    if not suggestions:
+        return []
+    scored = [
+        (
+            edit_distance(target, suggestion),
+            abs(len(target) - len(suggestion)),
+            suggestion,
+        )
+        for suggestion in suggestions
+    ]
+    scored.sort()
+    # Do not guess when multiple variants are equally plausible.
+    if len(scored) > 1 and scored[0][:2] == scored[1][:2]:
+        return []
+    key = (language, scored[0][2])
+    lemma_hits = lemma_index.get(key, [])
+    hits = lemma_hits or form_index.get(key, [])
+    candidates = [
+        Candidate(sentence, index, index + 1, "fuzzy_lemma" if lemma_hits else "fuzzy_surface")
+        for sentence, index in hits
+    ]
+    for candidate in candidates:
+        candidate.score = rank(candidate)
+    return sorted(candidates, key=lambda candidate: candidate.score)
 
 
 def morphology(candidate: Candidate) -> str:
@@ -911,6 +957,31 @@ def replacement_note(source: dict[str, Any], candidates: list[Candidate]) -> dic
     }
 
 
+def online_replacement_note(source: dict[str, Any], candidate: Any) -> dict[str, Any]:
+    """Render a candidate returned by the manual campaign's online adapters."""
+    return {
+        "deckName": DESTINATION_DECK,
+        "modelName": MODEL_NAME,
+        "fields": {
+            "Text": candidate.cloze,
+            "Gloss": source["gloss_html"],
+            "Translation": candidate.translation,
+            "Citation": candidate.citation_html,
+            "Alternatives": "",
+            "Lemma": candidate.lemma,
+            "Morphology": "",
+            "OriginalNoteID": str(source["note_id"]),
+        },
+        "options": {"allowDuplicate": True},
+        "tags": [
+            "generated::corpus_cloze",
+            "generated::automatic_online",
+            f"language::{source['language']}",
+            "corpus_cloze::translation_" + ("passage" if candidate.translation else "missing"),
+        ],
+    }
+
+
 def archive_originals(path: Path, note_ids: list[int]) -> None:
     archive = (
         json.loads(path.read_text(encoding="utf-8"))
@@ -935,6 +1006,7 @@ def migrate(
     archive_path: Path = ARCHIVE_PATH,
     *,
     tempo: float = 0.8,
+    online_single_words: bool = False,
 ) -> dict[str, int]:
     """Bring the collection to its migrated state. Safe to run any number of times.
 
@@ -961,10 +1033,24 @@ def migrate(
     if pending:
         lemma_index, form_index = build_indexes(load_corpus(corpus_root))
         already_unmatched = set(anki("findNotes", query=f'deck:"{UNMATCHED_DECK}" note:Basic'))
+        online_created = 0
         for source in pending:
             candidates, reason = find_candidates(source["front"], source["language"], lemma_index, form_index)
+            if not candidates:
+                candidates = fuzzy_single_word_candidates(
+                    source["front"], source["language"], lemma_index, form_index,
+                )
             if candidates:
                 create.append((source, replacement_note(source, candidates)))
+            elif online_single_words and len(source_terms(source["front"], source["language"])) == 1:
+                from scripts.classical_cloze.manual_campaign import greek_candidates, latin_candidates
+
+                finder = greek_candidates if source["language"] == "greek" else latin_candidates
+                online = finder(source_terms(source["front"], source["language"])[0])
+                if online:
+                    create.append((source, online_replacement_note(source, online[0])))
+                    online_created += 1
+                    continue
             elif source["note_id"] not in already_unmatched:
                 status = unmatched_status(source["front"], source["language"]) if reason == "unmatched" else reason
                 unmatched[status].append(source["note_id"])
@@ -1003,6 +1089,7 @@ def migrate(
         "originals": len(sources), "created": len(create),
         "moved_to_unmatched": sum(map(len, unmatched.values())),
         "audio_updated": audio["updated"], "originals_retired": len(retired),
+        "online_created": online_created if pending else 0,
     }
 
 
@@ -1012,12 +1099,18 @@ def main() -> None:
     run = subparsers.add_parser("migrate", help="match, create, add audio and retire originals; safe to re-run")
     run.add_argument("--corpora", type=Path, default=CORPUS_ROOT)
     run.add_argument("--archive", type=Path, default=ARCHIVE_PATH)
+    run.add_argument(
+        "--online-single-words", action="store_true",
+        help="use the manual campaign's online adapters for unresolved one-term entries",
+    )
     subparsers.add_parser("fetch-translations", help="download canonical Perseus English editions")
     args = parser.parse_args()
     if args.command == "migrate":
         from flashcards.recipes import ClassicalMigration
 
-        print(json.dumps(ClassicalMigration(args.corpora, args.archive).apply()))
+        print(json.dumps(ClassicalMigration(
+            args.corpora, args.archive, online_single_words=args.online_single_words,
+        ).apply()))
     else:
         print(json.dumps({"downloaded": fetch_translations(TRANSLATION_ROOT), "directory": str(TRANSLATION_ROOT)}))
 
